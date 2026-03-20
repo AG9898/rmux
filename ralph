@@ -133,9 +133,8 @@ log() {
 cleanup() {
   log "🛑 Ralph '$RALPH_NAME' stopped after $RUN_COUNT runs."
   rm -f "$PID_FILE" "$META_FILE"
-  pkill -TERM -P $$ 2>/dev/null
-  sleep 0.1
-  pkill -KILL -P $$ 2>/dev/null
+  # Kill entire process group (children, grandchildren, etc.)
+  kill -- -$$ 2>/dev/null
   exit 0
 }
 

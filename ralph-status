@@ -111,18 +111,29 @@ case "${1:-list}" in
         pid=$(grep '^pid=' "$meta" | cut -d= -f2-)
         n=$(grep '^name=' "$meta" | cut -d= -f2-)
         if kill -0 "$pid" 2>/dev/null; then
+          # Kill entire process group (children, grandchildren, etc.)
+          kill -- -"$pid" 2>/dev/null
           kill "$pid" 2>/dev/null
-          echo "Killed $n (PID $pid)"
+          pkill -TERM -P "$pid" 2>/dev/null
+          echo "Killed $n (PID $pid + children)"
         else
           echo "Already dead: $n (PID $pid)"
-          rm -f "$meta" "$PID_DIR/${n}.pid"
         fi
+        rm -f "$meta" "$PID_DIR/${n}.pid"
       done
     else
       meta="$PID_DIR/${name}.meta"
       if [ -f "$meta" ]; then
         pid=$(grep '^pid=' "$meta" | cut -d= -f2-)
-        kill "$pid" 2>/dev/null && echo "Killed $name" || echo "$name not running"
+        if kill -0 "$pid" 2>/dev/null; then
+          kill -- -"$pid" 2>/dev/null
+          kill "$pid" 2>/dev/null
+          pkill -TERM -P "$pid" 2>/dev/null
+          echo "Killed $name (PID $pid + children)"
+        else
+          echo "$name not running"
+        fi
+        rm -f "$meta" "$PID_DIR/${name}.pid"
       else
         echo "No ralph named '$name' found."
       fi
