@@ -274,7 +274,8 @@ export function spawnRalph(opts: SpawnOptions): { name: string; pid: number } {
 	const child = spawn(RALPH_BIN, args, {
 		detached: true,
 		stdio: 'ignore',
-		cwd: opts.dir || homedir()
+		cwd: opts.dir || homedir(),
+		shell: true
 	});
 
 	child.unref();

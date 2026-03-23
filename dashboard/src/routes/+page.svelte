@@ -193,31 +193,34 @@
 		<div class="border-b border-border px-6 py-4 bg-surface">
 			<div class="grid grid-cols-2 md:grid-cols-3 gap-3 max-w-4xl">
 				<div class="col-span-2 md:col-span-3">
-					<label class="block text-xs text-text-muted mb-1">prompt (empty = default /tackle)</label>
+					<label class="block text-xs text-text-muted mb-1">prompt (empty = default /tackle)
 					<textarea
 						bind:value={spawnPrompt}
 						class="w-full bg-bg border border-border rounded px-3 py-2 text-sm text-text resize-none focus:outline-none focus:border-accent"
 						rows="2"
 						placeholder="See AGENT_PROMPT.md"
 					></textarea>
+					</label>
 				</div>
 				<div>
-					<label class="block text-xs text-text-muted mb-1">name</label>
+					<label class="block text-xs text-text-muted mb-1">name
 					<input
 						bind:value={spawnName}
 						class="w-full bg-bg border border-border rounded px-3 py-1.5 text-sm text-text focus:outline-none focus:border-accent"
 						placeholder="auto-generated"
 					/>
+					</label>
 				</div>
 				<div>
-					<label class="block text-xs text-text-muted mb-1">directory</label>
+					<label class="block text-xs text-text-muted mb-1">directory
 					<input
 						bind:value={spawnDir}
 						class="w-full bg-bg border border-border rounded px-3 py-1.5 text-sm text-text focus:outline-none focus:border-accent"
 					/>
+					</label>
 				</div>
 				<div>
-					<label class="block text-xs text-text-muted mb-1">model</label>
+					<label class="block text-xs text-text-muted mb-1">model
 					<select
 						bind:value={spawnModel}
 						class="w-full bg-bg border border-border rounded px-3 py-1.5 text-sm text-text focus:outline-none focus:border-accent"
@@ -226,15 +229,17 @@
 						<option value="sonnet">sonnet</option>
 						<option value="haiku">haiku</option>
 					</select>
+					</label>
 				</div>
 				<div>
-					<label class="block text-xs text-text-muted mb-1">max runs</label>
+					<label class="block text-xs text-text-muted mb-1">max runs
 					<input
 						bind:value={spawnMaxRuns}
 						type="number"
 						min="0"
 						class="w-full bg-bg border border-border rounded px-3 py-1.5 text-sm text-text focus:outline-none focus:border-accent"
 					/>
+					</label>
 				</div>
 				<div class="flex items-end gap-3">
 					<label class="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
