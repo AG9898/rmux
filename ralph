@@ -134,7 +134,7 @@ cleanup() {
   # Prevent re-entry from repeated Ctrl-C
   trap - INT TERM
   log "🛑 Ralph '$RALPH_NAME' stopped after $RUN_COUNT runs."
-  rm -f "$PID_FILE" "$META_FILE"
+  rm -f "$PID_FILE"
   # Kill child processes only (not ourselves)
   pkill -TERM -P $$ 2>/dev/null
   wait 2>/dev/null
