@@ -4,7 +4,35 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap};
 
-use crate::app::{App, View};
+use crate::app::{App, TextInput, View};
+
+/// Render a TextInput as a Line with a visible block cursor
+fn render_input_line<'a>(input: &'a TextInput, focused: bool) -> Line<'a> {
+    let text = input.value();
+    let cursor = input.cursor;
+    let chars: Vec<char> = text.chars().collect();
+
+    if !focused {
+        return Line::from(format!(" {}", text));
+    }
+
+    let (before, cursor_ch, after) = if cursor < chars.len() {
+        let before: String = chars[..cursor].iter().collect();
+        let cursor_ch = chars[cursor].to_string();
+        let after: String = chars[cursor + 1..].iter().collect();
+        (before, cursor_ch, after)
+    } else {
+        (text.to_string(), " ".to_string(), String::new())
+    };
+
+    let cursor_style = Style::default().bg(Color::White).fg(Color::Black);
+
+    Line::from(vec![
+        Span::raw(format!(" {}", before)),
+        Span::styled(cursor_ch, cursor_style),
+        Span::raw(after),
+    ])
+}
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     match app.view {
@@ -219,7 +247,14 @@ fn render_log(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_launch(frame: &mut Frame, app: &mut App) {
-    let area = centered_rect(60, 70, frame.area());
+    let full = frame.area();
+    // Horizontal margin: center at 80% width, but use full width if terminal is narrow
+    let area = if full.width > 60 {
+        let margin = (full.width - full.width * 80 / 100) / 2;
+        Rect::new(full.x + margin, full.y, full.width - margin * 2, full.height)
+    } else {
+        full
+    };
     frame.render_widget(Clear, area);
 
     let chunks = Layout::default()
@@ -254,24 +289,25 @@ fn render_launch(frame: &mut Frame, app: &mut App) {
         };
 
         let label = app.launch_form.labels[i];
-        let value = &app.launch_form.fields[i];
+        let input = &app.launch_form.fields[i];
 
-        let display = if i == 5 {
+        let content: Line = if i == 5 {
             // Marathon toggle
-            if value == "true" { "[x] enabled" } else { "[ ] disabled" }.to_string()
+            let display = if input.value() == "true" { " [x] enabled" } else { " [ ] disabled" };
+            Line::from(display)
         } else {
-            let cursor = if is_focused { "|" } else { "" };
-            format!("{}{}", value, cursor)
+            render_input_line(input, is_focused)
         };
 
-        let widget = Paragraph::new(display)
+        let field_area = chunks[i + 1];
+        let widget = Paragraph::new(content)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(border_style)
                     .title(format!(" {} ", label)),
             );
-        frame.render_widget(widget, chunks[i + 1]);
+        frame.render_widget(widget, field_area);
     }
 
     // Keybind bar
@@ -314,7 +350,8 @@ fn render_restart(frame: &mut Frame, app: &mut App) {
     frame.render_widget(info, chunks[1]);
 
     // Max runs input
-    let input = Paragraph::new(format!("{}|", app.restart_form.max_runs))
+    let content = render_input_line(&app.restart_form.max_runs, true);
+    let input = Paragraph::new(content)
         .block(
             Block::default()
                 .borders(Borders::ALL)

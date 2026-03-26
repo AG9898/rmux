@@ -13,25 +13,119 @@ pub enum View {
     Restart,
 }
 
+pub struct TextInput {
+    pub text: String,
+    pub cursor: usize, // character position (not byte)
+}
+
+impl TextInput {
+    pub fn new(text: &str) -> Self {
+        let cursor = text.chars().count();
+        Self { text: text.to_string(), cursor }
+    }
+
+    pub fn empty() -> Self {
+        Self { text: String::new(), cursor: 0 }
+    }
+
+    pub fn set(&mut self, text: &str) {
+        self.text = text.to_string();
+        self.cursor = text.chars().count();
+    }
+
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.cursor = 0;
+    }
+
+    pub fn value(&self) -> &str {
+        &self.text
+    }
+
+    /// Byte offset of cursor position (for rendering)
+    pub fn cursor_byte_offset(&self) -> usize {
+        self.text.char_indices()
+            .nth(self.cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(self.text.len())
+    }
+
+    pub fn insert_char(&mut self, c: char) {
+        let byte_pos = self.cursor_byte_offset();
+        self.text.insert(byte_pos, c);
+        self.cursor += 1;
+    }
+
+    pub fn backspace(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+            let byte_pos = self.cursor_byte_offset();
+            self.text.remove(byte_pos);
+        }
+    }
+
+    pub fn delete(&mut self) {
+        let len = self.text.chars().count();
+        if self.cursor < len {
+            let byte_pos = self.cursor_byte_offset();
+            self.text.remove(byte_pos);
+        }
+    }
+
+    pub fn move_left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    pub fn move_right(&mut self) {
+        let len = self.text.chars().count();
+        if self.cursor < len {
+            self.cursor += 1;
+        }
+    }
+
+    pub fn move_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub fn move_end(&mut self) {
+        self.cursor = self.text.chars().count();
+    }
+
+    /// Handle a key event. Returns true if consumed.
+    pub fn handle_key(&mut self, key: &KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char(c) => { self.insert_char(c); true }
+            KeyCode::Backspace => { self.backspace(); true }
+            KeyCode::Delete => { self.delete(); true }
+            KeyCode::Left => { self.move_left(); true }
+            KeyCode::Right => { self.move_right(); true }
+            KeyCode::Home => { self.move_home(); true }
+            KeyCode::End => { self.move_end(); true }
+            _ => false,
+        }
+    }
+}
+
 pub struct LaunchForm {
-    pub fields: [String; 6], // prompt, model, dir, name, max_runs, marathon
+    pub fields: [TextInput; 6], // prompt, model, dir, name, max_runs, marathon
     pub focused: usize,
     pub labels: [&'static str; 6],
 }
 
 impl LaunchForm {
     pub fn new() -> Self {
+        let dir = std::env::current_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         Self {
             fields: [
-                String::new(),              // prompt
-                "opus".to_string(),         // model
-                std::env::current_dir()     // dir
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string(),
-                String::new(),              // name
-                "0".to_string(),            // max_runs
-                "false".to_string(),        // marathon
+                TextInput::empty(),              // prompt
+                TextInput::new("opus"),           // model
+                TextInput::new(&dir),             // dir
+                TextInput::empty(),              // name
+                TextInput::new("0"),             // max_runs
+                TextInput::new("false"),         // marathon
             ],
             focused: 0,
             labels: ["Prompt", "Model", "Directory", "Name", "Max runs", "Marathon"],
@@ -40,21 +134,22 @@ impl LaunchForm {
 
     pub fn reset(&mut self) {
         self.fields[0].clear();
-        self.fields[1] = "opus".to_string();
-        self.fields[2] = std::env::current_dir()
+        self.fields[1].set("opus");
+        let dir = std::env::current_dir()
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
+        self.fields[2].set(&dir);
         self.fields[3].clear();
-        self.fields[4] = "0".to_string();
-        self.fields[5] = "false".to_string();
+        self.fields[4].set("0");
+        self.fields[5].set("false");
         self.focused = 0;
     }
 }
 
 pub struct RestartForm {
     pub instance_name: String,
-    pub max_runs: String,
+    pub max_runs: TextInput,
 }
 
 pub struct App {
@@ -85,7 +180,7 @@ impl App {
             log_file_pos: 0,
             log_instance_name: String::new(),
             launch_form: LaunchForm::new(),
-            restart_form: RestartForm { instance_name: String::new(), max_runs: "0".to_string() },
+            restart_form: RestartForm { instance_name: String::new(), max_runs: TextInput::new("0") },
             should_quit: false,
             status_msg: String::new(),
             confirm_kill: None,
@@ -175,12 +270,12 @@ impl App {
 
     fn do_launch(&mut self) {
         let opts = SpawnOpts {
-            prompt: self.launch_form.fields[0].clone(),
-            model: self.launch_form.fields[1].clone(),
-            dir: self.launch_form.fields[2].clone(),
-            name: self.launch_form.fields[3].clone(),
-            max_runs: self.launch_form.fields[4].parse().unwrap_or(0),
-            marathon: self.launch_form.fields[5] == "true",
+            prompt: self.launch_form.fields[0].value().to_string(),
+            model: self.launch_form.fields[1].value().to_string(),
+            dir: self.launch_form.fields[2].value().to_string(),
+            name: self.launch_form.fields[3].value().to_string(),
+            max_runs: self.launch_form.fields[4].value().parse().unwrap_or(0),
+            marathon: self.launch_form.fields[5].value() == "true",
         };
         match ralph::spawn_ralph(&opts) {
             Ok(msg) => self.status_msg = msg,
@@ -251,7 +346,7 @@ impl App {
                         self.status_msg = format!("{} is still running — kill it first", inst.name);
                     } else {
                         self.restart_form.instance_name = inst.name.clone();
-                        self.restart_form.max_runs = "0".to_string();
+                        self.restart_form.max_runs = TextInput::new("0");
                         self.view = View::Restart;
                         self.status_msg.clear();
                         self.confirm_kill = None;
@@ -329,17 +424,11 @@ impl App {
             }
             KeyCode::Char(' ') if focused == 5 => {
                 // Toggle marathon
-                self.launch_form.fields[5] = if self.launch_form.fields[5] == "true" {
-                    "false".to_string()
-                } else {
-                    "true".to_string()
-                };
+                let new_val = if self.launch_form.fields[5].value() == "true" { "false" } else { "true" };
+                self.launch_form.fields[5].set(new_val);
             }
-            KeyCode::Char(c) if focused != 5 => {
-                self.launch_form.fields[focused].push(c);
-            }
-            KeyCode::Backspace if focused != 5 => {
-                self.launch_form.fields[focused].pop();
+            _ if focused != 5 => {
+                self.launch_form.fields[focused].handle_key(&key);
             }
             _ => {}
         }
@@ -355,24 +444,29 @@ impl App {
                 self.do_restart();
             }
             KeyCode::Char(c) if c.is_ascii_digit() => {
-                if self.restart_form.max_runs == "0" {
-                    self.restart_form.max_runs = c.to_string();
+                if self.restart_form.max_runs.value() == "0" {
+                    self.restart_form.max_runs.set(&c.to_string());
                 } else {
-                    self.restart_form.max_runs.push(c);
+                    self.restart_form.max_runs.insert_char(c);
                 }
             }
             KeyCode::Backspace => {
-                self.restart_form.max_runs.pop();
-                if self.restart_form.max_runs.is_empty() {
-                    self.restart_form.max_runs = "0".to_string();
+                self.restart_form.max_runs.backspace();
+                if self.restart_form.max_runs.value().is_empty() {
+                    self.restart_form.max_runs.set("0");
                 }
             }
+            KeyCode::Left => { self.restart_form.max_runs.move_left(); }
+            KeyCode::Right => { self.restart_form.max_runs.move_right(); }
+            KeyCode::Home => { self.restart_form.max_runs.move_home(); }
+            KeyCode::End => { self.restart_form.max_runs.move_end(); }
+            KeyCode::Delete => { self.restart_form.max_runs.delete(); }
             _ => {}
         }
     }
 
     fn do_restart(&mut self) {
-        let max_runs: u32 = self.restart_form.max_runs.parse().unwrap_or(0);
+        let max_runs: u32 = self.restart_form.max_runs.value().parse().unwrap_or(0);
         let name = self.restart_form.instance_name.clone();
         match ralph::restart_instance(&name, max_runs) {
             Ok(msg) => self.status_msg = msg,
