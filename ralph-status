@@ -140,6 +140,65 @@ case "${1:-list}" in
     fi
     ;;
 
+  restart)
+    name="$2"
+    new_runs="${3:-0}"
+    if [ -z "$name" ]; then
+      echo "Usage: ralph-status restart <name> [max_runs]"
+      echo "  Restart a dead ralph with the same prompt/dir/model but a new run limit."
+      echo "  max_runs defaults to 0 (unlimited)."
+      exit 1
+    fi
+
+    meta="$PID_DIR/${name}.meta"
+    if [ ! -f "$meta" ]; then
+      echo "No ralph named '$name' found."
+      exit 1
+    fi
+
+    pid=$(grep '^pid=' "$meta" | cut -d= -f2-)
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "$name is still running (PID $pid). Kill it first or wait for it to finish."
+      exit 1
+    fi
+
+    # Read settings from the dead ralph's metadata
+    prompt=$(grep '^prompt=' "$meta" | cut -d= -f2-)
+    model=$(grep '^model=' "$meta" | cut -d= -f2-)
+    work_dir=$(grep '^work_dir=' "$meta" | cut -d= -f2-)
+    marathon=$(grep '^marathon=' "$meta" | cut -d= -f2-)
+
+    # Clean up old metadata
+    rm -f "$meta" "$PID_DIR/${name}.pid"
+
+    # Build the ralph command
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    ralph_cmd=("$SCRIPT_DIR/ralph")
+    ralph_cmd+=("$prompt")
+    [ "$new_runs" != "0" ] && ralph_cmd+=("$new_runs")
+    ralph_cmd+=(-n "$name" -m "$model" -d "$work_dir")
+    [ "$marathon" = "true" ] && ralph_cmd+=(--marathon)
+
+    echo "Restarting $name..."
+    echo "  Model:    $model"
+    echo "  Dir:      $work_dir"
+    echo "  Runs:     $([ "$new_runs" = "0" ] && echo "unlimited" || echo "$new_runs")"
+    echo "  Prompt:   ${prompt:0:80}$([ ${#prompt} -gt 80 ] && echo '...')"
+
+    # Spawn detached
+    nohup "${ralph_cmd[@]}" </dev/null &>/dev/null &
+    disown
+    sleep 1
+
+    # Verify it started
+    if [ -f "$PID_DIR/${name}.meta" ]; then
+      new_pid=$(grep '^pid=' "$PID_DIR/${name}.meta" | cut -d= -f2-)
+      echo "  ✅ Restarted as PID $new_pid"
+    else
+      echo "  ⚠️  Failed to restart. Check logs."
+    fi
+    ;;
+
   clean)
     echo "Cleaning dead ralph metadata..."
     for meta in "$PID_DIR"/*.meta; do
@@ -158,12 +217,13 @@ case "${1:-list}" in
 Usage: ralph-status <command> [args]
 
 Commands:
-  list           Show all ralph instances and their status (default)
-  tail [name] [n]  Show last n lines of a ralph's log (default: most recent, 50 lines)
-  log [name]     Print log file path (for piping)
-  logs           List all log files
-  kill <name|all>  Kill a ralph instance (or all)
-  clean          Remove metadata for dead instances
+  list              Show all ralph instances and their status (default)
+  tail [name] [n]   Show last n lines of a ralph's log (default: most recent, 50 lines)
+  log [name]        Print log file path (for piping)
+  logs              List all log files
+  kill <name|all>   Kill a ralph instance (or all)
+  restart <name> [max_runs]  Restart a dead ralph with same settings, new run limit
+  clean             Remove metadata for dead instances
 USAGE
     ;;
 esac
