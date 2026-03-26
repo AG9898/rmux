@@ -115,6 +115,7 @@ name=$RALPH_NAME
 pid=$$
 prompt=$PROMPT
 max_runs=$MAX_RUNS
+current_run=0
 model=$MODEL
 work_dir=${WORK_DIR:-$(pwd)}
 marathon=$MARATHON
