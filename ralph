@@ -111,6 +111,25 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Normalize common Codex model aliases to canonical names.
+if [[ "$CLI_BIN" == "codex" ]]; then
+  MODEL_LOWER="$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]')"
+  case "$MODEL_LOWER" in
+    "gpt 5.4"|"gpt5.4")
+      MODEL="gpt-5.4"
+      ;;
+    "gpt 5.3"|"gpt5.3")
+      MODEL="gpt-5.3"
+      ;;
+    "gpt 4.1"|"gpt4.1")
+      MODEL="gpt-4.1"
+      ;;
+    "o4 mini"|"o4mini")
+      MODEL="o4-mini"
+      ;;
+  esac
+fi
+
 # Use default prompt if none provided
 if [ -z "$PROMPT" ]; then
   PROMPT="$DEFAULT_PROMPT"
@@ -220,7 +239,7 @@ while true; do
       | if [ "$NO_LOG" = false ]; then tee -a "$LOG_FILE" "$OUTPUT_TMP"; else tee "$OUTPUT_TMP"; fi
       ;;
     codex)
-      codex --model "$MODEL" "$PROMPT" </dev/null 2>/dev/null \
+      codex exec --dangerously-bypass-approvals-and-sandbox --model "$MODEL" "$PROMPT" </dev/null 2>&1 \
       | if [ "$NO_LOG" = false ]; then tee -a "$LOG_FILE" "$OUTPUT_TMP"; else tee "$OUTPUT_TMP"; fi
       ;;
     gemini)

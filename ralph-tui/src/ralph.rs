@@ -86,6 +86,12 @@ pub mod harness {
         let (harness, model_raw) = if let Some(h) = cli_match {
             (h, tail_opt.unwrap_or(""))
         } else {
+            if let Some((best_harness, best_model)) = best_harness_model(raw) {
+                return Resolved {
+                    cli: best_harness.cli.to_string(),
+                    model: best_model.canonical.to_string(),
+                };
+            }
             let claude = HARNESSES.iter().find(|h| h.cli == "claude").unwrap();
             (claude, raw)
         };
@@ -93,31 +99,97 @@ pub mod harness {
         Resolved { cli: harness.cli.to_string(), model: fuzzy_model(harness, model_raw) }
     }
 
+    fn best_harness_model(model_raw: &str) -> Option<(&'static HarnessEntry, &'static ModelEntry)> {
+        let lower = model_raw.to_lowercase();
+        let normalized = normalize_model_key(&lower);
+        let mut best_score = 0i32;
+        let mut best: Option<(&HarnessEntry, &ModelEntry)> = None;
+        for harness in HARNESSES {
+            for entry in harness.models {
+                let s = score_model(entry, &lower, &normalized);
+                if s > best_score {
+                    best_score = s;
+                    best = Some((harness, entry));
+                }
+            }
+        }
+        if best_score == 0 { None } else { best }
+    }
+
     fn fuzzy_model(harness: &HarnessEntry, model_raw: &str) -> String {
         if model_raw.is_empty() {
             return harness.models.first().map(|m| m.canonical.to_string()).unwrap_or_default();
         }
         let lower = model_raw.to_lowercase();
+        let normalized = normalize_model_key(&lower);
         let mut best_score = 0i32;
         let mut best = harness.models.first().map(|m| m.canonical).unwrap_or("");
         for entry in harness.models {
-            let s = score_model(entry, &lower);
+            let s = score_model(entry, &lower, &normalized);
             if s > best_score { best_score = s; best = entry.canonical; }
         }
         if best_score == 0 { model_raw.to_string() } else { best.to_string() }
     }
 
-    fn score_model(entry: &ModelEntry, lower: &str) -> i32 {
-        if entry.canonical.eq_ignore_ascii_case(lower) { return 3; }
+    fn normalize_model_key(value: &str) -> String {
+        value
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .flat_map(|c| c.to_lowercase())
+            .collect()
+    }
+
+    fn score_model(entry: &ModelEntry, lower: &str, normalized: &str) -> i32 {
+        if entry.canonical.eq_ignore_ascii_case(lower) {
+            return 3;
+        }
+        let canonical = entry.canonical.to_lowercase();
+        let canonical_normalized = normalize_model_key(&canonical);
+        if !normalized.is_empty() && canonical_normalized == normalized {
+            return 3;
+        }
         for alias in entry.aliases {
             let a = alias.to_lowercase();
-            if a == lower { return 3; }
-            if a.starts_with(lower) || lower.starts_with(&a) { return 2; }
-            if a.contains(lower) || lower.contains(&a) { return 1; }
+            let alias_normalized = normalize_model_key(&a);
+            if a == lower {
+                return 3;
+            }
+            if !normalized.is_empty() && alias_normalized == normalized {
+                return 3;
+            }
+            if a.starts_with(lower)
+                || lower.starts_with(&a)
+                || (!normalized.is_empty()
+                    && (alias_normalized.starts_with(normalized)
+                        || normalized.starts_with(&alias_normalized)))
+            {
+                return 2;
+            }
+            if a.contains(lower)
+                || lower.contains(&a)
+                || (!normalized.is_empty()
+                    && (alias_normalized.contains(normalized)
+                        || normalized.contains(&alias_normalized)))
+            {
+                return 1;
+            }
         }
-        let c = entry.canonical.to_lowercase();
-        if c.starts_with(lower) || lower.starts_with(&c) { return 2; }
-        if c.contains(lower) || lower.contains(&c) { return 1; }
+        if canonical.starts_with(lower)
+            || lower.starts_with(&canonical)
+            || (!normalized.is_empty()
+                && (canonical_normalized.starts_with(normalized)
+                    || normalized.starts_with(&canonical_normalized)))
+        {
+            return 2;
+        }
+        if canonical.contains(lower)
+            || lower.contains(&canonical)
+            || (!normalized.is_empty()
+                && (canonical_normalized.contains(normalized)
+                    || normalized.contains(&canonical_normalized)))
+        {
+            return 1;
+        }
         0
     }
 
@@ -147,10 +219,24 @@ pub mod harness {
         }
 
         #[test]
+        fn test_codex_gpt_with_space_separator() {
+            let r = resolve("codex gpt 5.4");
+            assert_eq!(r.cli, "codex");
+            assert_eq!(r.model, "gpt-5.4");
+        }
+
+        #[test]
         fn test_gemini_flash() {
             let r = resolve("gemini flash");
             assert_eq!(r.cli, "gemini");
             assert_eq!(r.model, "gemini-2.5-flash");
+        }
+
+        #[test]
+        fn test_bare_gpt_with_space_routes_to_codex() {
+            let r = resolve("gpt 5.4");
+            assert_eq!(r.cli, "codex");
+            assert_eq!(r.model, "gpt-5.4");
         }
 
         #[test]
