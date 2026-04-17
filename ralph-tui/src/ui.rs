@@ -71,7 +71,7 @@ fn render_list(frame: &mut Frame, app: &mut App) {
     let header = Row::new(vec![
         Cell::from(" Status"),
         Cell::from("Name"),
-        Cell::from("Model"),
+        Cell::from("CLI/Model"),
         Cell::from("Run"),
         Cell::from("Dir"),
         Cell::from("Started"),
@@ -106,7 +106,7 @@ fn render_list(frame: &mut Frame, app: &mut App) {
             Row::new(vec![
                 status,
                 Cell::from(inst.name.clone()),
-                Cell::from(inst.model.clone()),
+                Cell::from(format!("{}/{}", inst.cli, inst.model)),
                 Cell::from(run),
                 Cell::from(dir),
                 Cell::from(started),
@@ -119,7 +119,7 @@ fn render_list(frame: &mut Frame, app: &mut App) {
         [
             Constraint::Length(8),
             Constraint::Min(20),
-            Constraint::Length(8),
+            Constraint::Length(18),
             Constraint::Length(8),
             Constraint::Min(15),
             Constraint::Length(20),
@@ -265,15 +265,16 @@ fn render_launch(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // title
-            Constraint::Length(3), // prompt
-            Constraint::Length(3), // model
-            Constraint::Length(3), // dir
-            Constraint::Length(3), // name
-            Constraint::Length(3), // max_runs
-            Constraint::Length(3), // marathon
-            Constraint::Min(0),   // spacer
-            Constraint::Length(1), // keybinds
+            Constraint::Length(1), // [0] title
+            Constraint::Length(3), // [1] prompt
+            Constraint::Length(3), // [2] cli model
+            Constraint::Length(1), // [3] cli model hint
+            Constraint::Length(3), // [4] dir
+            Constraint::Length(3), // [5] name
+            Constraint::Length(3), // [6] max_runs
+            Constraint::Length(3), // [7] marathon
+            Constraint::Min(0),    // [8] spacer
+            Constraint::Length(1), // [9] keybinds
         ])
         .split(area);
 
@@ -284,7 +285,7 @@ fn render_launch(frame: &mut Frame, app: &mut App) {
     ));
     frame.render_widget(Paragraph::new(title), chunks[0]);
 
-    // Form fields
+    // Form fields — chunk indices: prompt=[1], cli_model=[2], hint=[3], dir=[4], name=[5], max_runs=[6], marathon=[7]
     for i in 0..6 {
         let is_focused = app.launch_form.focused == i;
         let border_style = if is_focused {
@@ -304,7 +305,8 @@ fn render_launch(frame: &mut Frame, app: &mut App) {
             render_input_line(input, is_focused)
         };
 
-        let field_area = chunks[i + 1];
+        // Skip hint slot (chunk[3]) when mapping field index to chunk index
+        let chunk_idx = if i < 2 { i + 1 } else { i + 2 };
         let widget = Paragraph::new(content)
             .block(
                 Block::default()
@@ -312,7 +314,16 @@ fn render_launch(frame: &mut Frame, app: &mut App) {
                     .border_style(border_style)
                     .title(format!(" {} ", label)),
             );
-        frame.render_widget(widget, field_area);
+        frame.render_widget(widget, chunks[chunk_idx]);
+
+        // Hint below the CLI Model field
+        if i == 1 {
+            let hint = Paragraph::new(Line::from(Span::styled(
+                "  e.g. \"gemini flash\"",
+                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            )));
+            frame.render_widget(hint, chunks[3]);
+        }
     }
 
     // Keybind bar
@@ -324,7 +335,7 @@ fn render_launch(frame: &mut Frame, app: &mut App) {
         Span::styled("Esc", Style::default().fg(Color::Cyan)),
         Span::raw(" cancel"),
     ]);
-    frame.render_widget(Paragraph::new(bar), chunks[8]);
+    frame.render_widget(Paragraph::new(bar), chunks[9]);
 }
 
 fn render_restart(frame: &mut Frame, app: &mut App) {

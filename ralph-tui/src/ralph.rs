@@ -6,6 +6,173 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use serde_json;
 
+pub mod harness {
+    pub struct Resolved {
+        pub cli: String,
+        pub model: String,
+    }
+
+    struct HarnessEntry {
+        cli: &'static str,
+        aliases: &'static [&'static str],
+        models: &'static [ModelEntry],
+    }
+
+    struct ModelEntry {
+        canonical: &'static str,
+        aliases: &'static [&'static str],
+    }
+
+    static HARNESSES: &[HarnessEntry] = &[
+        HarnessEntry {
+            cli: "claude",
+            aliases: &["claude", "anthropic"],
+            models: &[
+                ModelEntry { canonical: "claude-opus-4-7", aliases: &["opus"] },
+                ModelEntry { canonical: "claude-sonnet-4-6", aliases: &["sonnet"] },
+                ModelEntry { canonical: "claude-haiku-4-5", aliases: &["haiku"] },
+            ],
+        },
+        HarnessEntry {
+            cli: "codex",
+            aliases: &["codex"],
+            models: &[
+                ModelEntry { canonical: "o4-mini", aliases: &["o4", "mini", "o4mini"] },
+                ModelEntry { canonical: "o3", aliases: &["o3"] },
+                ModelEntry { canonical: "gpt-4.1", aliases: &["gpt4", "gpt", "4.1"] },
+                ModelEntry { canonical: "gpt-5.4", aliases: &["5.4", "gpt5"] },
+            ],
+        },
+        HarnessEntry {
+            cli: "gemini",
+            aliases: &["gemini"],
+            models: &[
+                ModelEntry { canonical: "gemini-2.5-pro", aliases: &["pro", "2.5pro"] },
+                ModelEntry { canonical: "gemini-2.5-flash", aliases: &["flash", "2.5flash"] },
+                ModelEntry { canonical: "gemini-3-pro-preview", aliases: &["3pro", "gemini3"] },
+                ModelEntry { canonical: "gemini-3-flash-preview", aliases: &["3flash"] },
+            ],
+        },
+        HarnessEntry {
+            cli: "opencode",
+            aliases: &["opencode", "oc"],
+            models: &[
+                ModelEntry { canonical: "anthropic/claude-sonnet-4-6", aliases: &["sonnet", "claude"] },
+                ModelEntry { canonical: "openai/gpt-5", aliases: &["gpt5", "gpt"] },
+                ModelEntry { canonical: "google/gemini-2.5-pro", aliases: &["pro", "gemini"] },
+            ],
+        },
+    ];
+
+    pub fn resolve(raw: &str) -> Resolved {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Resolved { cli: "claude".to_string(), model: "claude-opus-4-7".to_string() };
+        }
+
+        let (head, tail_opt) = match raw.find(|c: char| c.is_whitespace()) {
+            Some(pos) => (&raw[..pos], Some(raw[pos..].trim())),
+            None => (raw, None),
+        };
+
+        let cli_match = if tail_opt.is_some() {
+            HARNESSES.iter().find(|h| h.aliases.iter().any(|a| a.eq_ignore_ascii_case(head)))
+        } else {
+            None
+        };
+
+        let (harness, model_raw) = if let Some(h) = cli_match {
+            (h, tail_opt.unwrap_or(""))
+        } else {
+            let claude = HARNESSES.iter().find(|h| h.cli == "claude").unwrap();
+            (claude, raw)
+        };
+
+        Resolved { cli: harness.cli.to_string(), model: fuzzy_model(harness, model_raw) }
+    }
+
+    fn fuzzy_model(harness: &HarnessEntry, model_raw: &str) -> String {
+        if model_raw.is_empty() {
+            return harness.models.first().map(|m| m.canonical.to_string()).unwrap_or_default();
+        }
+        let lower = model_raw.to_lowercase();
+        let mut best_score = 0i32;
+        let mut best = harness.models.first().map(|m| m.canonical).unwrap_or("");
+        for entry in harness.models {
+            let s = score_model(entry, &lower);
+            if s > best_score { best_score = s; best = entry.canonical; }
+        }
+        if best_score == 0 { model_raw.to_string() } else { best.to_string() }
+    }
+
+    fn score_model(entry: &ModelEntry, lower: &str) -> i32 {
+        if entry.canonical.eq_ignore_ascii_case(lower) { return 3; }
+        for alias in entry.aliases {
+            let a = alias.to_lowercase();
+            if a == lower { return 3; }
+            if a.starts_with(lower) || lower.starts_with(&a) { return 2; }
+            if a.contains(lower) || lower.contains(&a) { return 1; }
+        }
+        let c = entry.canonical.to_lowercase();
+        if c.starts_with(lower) || lower.starts_with(&c) { return 2; }
+        if c.contains(lower) || lower.contains(&c) { return 1; }
+        0
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_bare_opus() {
+            let r = resolve("opus");
+            assert_eq!(r.cli, "claude");
+            assert_eq!(r.model, "claude-opus-4-7");
+        }
+
+        #[test]
+        fn test_claude_sonnet() {
+            let r = resolve("claude sonnet");
+            assert_eq!(r.cli, "claude");
+            assert_eq!(r.model, "claude-sonnet-4-6");
+        }
+
+        #[test]
+        fn test_codex_o4_mini() {
+            let r = resolve("codex o4-mini");
+            assert_eq!(r.cli, "codex");
+            assert_eq!(r.model, "o4-mini");
+        }
+
+        #[test]
+        fn test_gemini_flash() {
+            let r = resolve("gemini flash");
+            assert_eq!(r.cli, "gemini");
+            assert_eq!(r.model, "gemini-2.5-flash");
+        }
+
+        #[test]
+        fn test_opencode_sonnet() {
+            let r = resolve("opencode sonnet");
+            assert_eq!(r.cli, "opencode");
+            assert_eq!(r.model, "anthropic/claude-sonnet-4-6");
+        }
+
+        #[test]
+        fn test_empty() {
+            let r = resolve("");
+            assert_eq!(r.cli, "claude");
+            assert_eq!(r.model, "claude-opus-4-7");
+        }
+
+        #[test]
+        fn test_unknown_cli_falls_back_to_claude() {
+            let r = resolve("unknowncli some-model");
+            assert_eq!(r.cli, "claude");
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RalphInstance {
     pub name: String,
@@ -13,6 +180,7 @@ pub struct RalphInstance {
     pub prompt: String,
     pub max_runs: u32,
     pub model: String,
+    pub cli: String,
     pub work_dir: String,
     pub marathon: bool,
     pub started: String,
@@ -83,6 +251,7 @@ pub struct SpawnOpts {
     pub prompt: String,
     pub max_runs: u32,
     pub model: String,
+    pub cli: String,
     pub dir: String,
     pub name: String,
     pub marathon: bool,
@@ -114,6 +283,7 @@ fn parse_meta(path: &Path) -> Option<RalphInstance> {
     let mut prompt = String::new();
     let mut max_runs: u32 = 0;
     let mut model = String::from("opus");
+    let mut cli = String::from("claude");
     let mut work_dir = String::new();
     let mut marathon = false;
     let mut started = String::new();
@@ -127,6 +297,7 @@ fn parse_meta(path: &Path) -> Option<RalphInstance> {
                 "prompt" => prompt = val.trim().to_string(),
                 "max_runs" => max_runs = val.trim().parse().unwrap_or(0),
                 "model" => model = val.trim().to_string(),
+                "cli" => cli = val.trim().to_string(),
                 "work_dir" => work_dir = val.trim().to_string(),
                 "marathon" => marathon = val.trim() == "true",
                 "started" => started = val.trim().to_string(),
@@ -154,6 +325,7 @@ fn parse_meta(path: &Path) -> Option<RalphInstance> {
         prompt,
         max_runs,
         model,
+        cli,
         work_dir,
         marathon,
         started,
@@ -217,6 +389,7 @@ pub fn list_instances() -> Vec<RalphInstance> {
                     prompt: "(finished — check log)".to_string(),
                     max_runs: 0,
                     model: "?".to_string(),
+                    cli: "?".to_string(),
                     work_dir: String::new(),
                     marathon: false,
                     started,
@@ -324,9 +497,13 @@ pub fn spawn_ralph(opts: &SpawnOpts) -> Result<String> {
         args.push("-d".to_string());
         args.push(opts.dir.clone());
     }
-    if opts.model != "opus" && !opts.model.is_empty() {
+    if !opts.model.is_empty() {
         args.push("-m".to_string());
         args.push(opts.model.clone());
+    }
+    if !opts.cli.is_empty() && opts.cli != "claude" {
+        args.push("--cli".to_string());
+        args.push(opts.cli.clone());
     }
     if opts.marathon {
         args.push("--marathon".to_string());
@@ -375,6 +552,7 @@ pub fn restart_instance(name: &str, new_max_runs: u32) -> Result<String> {
         prompt: inst.prompt,
         max_runs: new_max_runs,
         model: inst.model,
+        cli: inst.cli,
         dir: inst.work_dir,
         name: inst.name.clone(),
         marathon: inst.marathon,

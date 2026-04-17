@@ -121,20 +121,20 @@ impl LaunchForm {
         Self {
             fields: [
                 TextInput::empty(),              // prompt
-                TextInput::new("opus"),           // model
+                TextInput::new("claude opus"),   // cli + model
                 TextInput::new(&dir),             // dir
                 TextInput::empty(),              // name
                 TextInput::new("0"),             // max_runs
                 TextInput::new("false"),         // marathon
             ],
             focused: 0,
-            labels: ["Prompt", "Model", "Directory", "Name", "Max runs", "Marathon"],
+            labels: ["Prompt", "CLI  Model", "Directory", "Name", "Max runs", "Marathon"],
         }
     }
 
     pub fn reset(&mut self) {
         self.fields[0].clear();
-        self.fields[1].set("opus");
+        self.fields[1].set("claude opus");
         let dir = std::env::current_dir()
             .unwrap_or_default()
             .to_string_lossy()
@@ -275,9 +275,13 @@ impl App {
     }
 
     fn do_launch(&mut self) {
+        let raw_cli_model = self.launch_form.fields[1].value().to_string();
+        let resolved = ralph::harness::resolve(&raw_cli_model);
+        self.launch_form.fields[1].set(&format!("{} {}", resolved.cli, resolved.model));
         let opts = SpawnOpts {
             prompt: self.launch_form.fields[0].value().to_string(),
-            model: self.launch_form.fields[1].value().to_string(),
+            model: resolved.model,
+            cli: resolved.cli,
             dir: self.launch_form.fields[2].value().to_string(),
             name: self.launch_form.fields[3].value().to_string(),
             max_runs: self.launch_form.fields[4].value().parse().unwrap_or(0),
