@@ -2,14 +2,22 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Instant;
 
 use crate::ralph::{self, RalphInstance, RalphPreset, SpawnOpts};
+use crate::terminal::NativeTerminal;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum View {
     List,
     Log,
     Launch,
     Restart,
     Inject,
+    Terminal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExternalAction {
+    OpenTerminal { cwd: String },
+    OpenNativeTerminal { cwd: String },
 }
 
 pub struct TextInput {
@@ -210,6 +218,9 @@ pub struct App {
     pub presets: Vec<RalphPreset>,
     pub preset_selected: usize,
     pub show_presets: bool,
+    pub pending_action: Option<ExternalAction>,
+    pub terminal_return_view: View,
+    pub native_terminal: Option<NativeTerminal>,
 }
 
 impl App {
@@ -239,6 +250,9 @@ impl App {
             presets: ralph::load_presets(),
             preset_selected: 0,
             show_presets: false,
+            pending_action: None,
+            terminal_return_view: View::List,
+            native_terminal: None,
         };
         app.refresh_instances();
         app
@@ -260,6 +274,13 @@ impl App {
             View::List => self.refresh_instances(),
             View::Log => self.refresh_log(),
             View::Launch | View::Restart | View::Inject => {}
+            View::Terminal => {
+                match self.terminal_return_view {
+                    View::Log => self.refresh_log(),
+                    _ => self.refresh_instances(),
+                }
+                self.refresh_native_terminal();
+            }
         }
         // Expire kill confirmation after 3 seconds
         if let Some((_, when)) = &self.confirm_kill {
@@ -398,10 +419,129 @@ impl App {
         }
     }
 
+    fn refresh_native_terminal(&mut self) {
+        let mut exited = false;
+        let mut had_error = None;
+        if let Some(term) = self.native_terminal.as_mut() {
+            term.drain_output();
+            match term.has_exited() {
+                Ok(done) => exited = done,
+                Err(e) => had_error = Some(e.to_string()),
+            }
+        }
+
+        if let Some(err) = had_error {
+            self.status_msg = format!("Terminal error: {}", err);
+            self.close_native_terminal();
+        } else if exited {
+            self.status_msg = "Terminal exited".to_string();
+            self.close_native_terminal();
+        }
+    }
+
+    fn terminal_cwd_for_current_view(&self) -> String {
+        let from_instance = match self.view {
+            View::List => self.selected_instance().map(|inst| inst.work_dir.as_str()),
+            View::Log => self
+                .instances
+                .iter()
+                .find(|inst| inst.name == self.log_instance_name)
+                .map(|inst| inst.work_dir.as_str()),
+            View::Launch | View::Restart | View::Inject | View::Terminal => None,
+        };
+
+        if let Some(dir) = from_instance {
+            let trimmed = dir.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+
+        std::env::current_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+    }
+
+    fn queue_terminal_action(&mut self) {
+        let cwd = self.terminal_cwd_for_current_view();
+        self.pending_action = Some(ExternalAction::OpenTerminal { cwd });
+        self.confirm_kill = None;
+    }
+
+    fn queue_native_terminal_action(&mut self) {
+        let cwd = self.terminal_cwd_for_current_view();
+        self.pending_action = Some(ExternalAction::OpenNativeTerminal { cwd });
+        self.terminal_return_view = self.view;
+        self.confirm_kill = None;
+    }
+
+    pub fn open_native_terminal(&mut self, cwd: &str, cols: u16, rows: u16) {
+        if self.native_terminal.is_some() {
+            self.close_native_terminal();
+        }
+        match NativeTerminal::spawn(cwd, cols, rows) {
+            Ok(term) => {
+                self.native_terminal = Some(term);
+                self.view = View::Terminal;
+                self.status_msg.clear();
+            }
+            Err(e) => {
+                self.status_msg = format!("Error: {}", e);
+                self.view = self.terminal_return_view;
+            }
+        }
+    }
+
+    pub fn close_native_terminal(&mut self) {
+        self.native_terminal = None;
+        self.view = self.terminal_return_view;
+    }
+
+    pub fn resize_native_terminal(&mut self, cols: u16, rows: u16) {
+        if let Some(term) = self.native_terminal.as_mut() {
+            if let Err(e) = term.resize(cols, rows) {
+                self.status_msg = format!("Terminal resize failed: {}", e);
+            }
+        }
+    }
+
+    fn handle_terminal_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.status_msg = "Closed terminal (Ctrl-G)".to_string();
+            self.close_native_terminal();
+            return;
+        }
+
+        if let Some(term) = self.native_terminal.as_mut() {
+            match term.send_key(key) {
+                Ok(_) => term.drain_output(),
+                Err(e) => {
+                    self.status_msg = format!("Terminal I/O error: {}", e);
+                    self.close_native_terminal();
+                }
+            }
+        } else {
+            self.close_native_terminal();
+        }
+    }
+
+    pub fn take_external_action(&mut self) -> Option<ExternalAction> {
+        self.pending_action.take()
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) {
-        // Ctrl-C always quits
-        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        // Ctrl-C quits in normal modes; terminal mode passes Ctrl-C to shell.
+        if self.view != View::Terminal
+            && key.code == KeyCode::Char('c')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
             self.should_quit = true;
+            return;
+        }
+
+        if self.view == View::Terminal {
+            self.handle_terminal_key(key);
             return;
         }
 
@@ -416,6 +556,7 @@ impl App {
             View::Launch => self.handle_launch_key(key),
             View::Restart => self.handle_restart_key(key),
             View::Inject => self.handle_inject_key(key),
+            View::Terminal => {}
         }
     }
 
@@ -450,6 +591,12 @@ impl App {
             }
             KeyCode::Char('i') => {
                 self.open_inject_for_selected();
+            }
+            KeyCode::Char('t') => {
+                self.queue_terminal_action();
+            }
+            KeyCode::Char('T') => {
+                self.queue_native_terminal_action();
             }
             KeyCode::Char('p') => {
                 if !self.presets.is_empty() {
@@ -526,6 +673,12 @@ impl App {
             }
             KeyCode::Char('i') => {
                 self.open_inject_for_log();
+            }
+            KeyCode::Char('t') => {
+                self.queue_terminal_action();
+            }
+            KeyCode::Char('T') => {
+                self.queue_native_terminal_action();
             }
             KeyCode::PageDown => {
                 self.log_scroll =
@@ -669,5 +822,48 @@ impl App {
         }
         self.view = View::List;
         self.refresh_instances();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
+    #[test]
+    fn list_view_t_uppercase_queues_native_terminal_action() {
+        let mut app = App::new();
+        app.view = View::List;
+
+        app.handle_key(key(KeyCode::Char('T'), KeyModifiers::NONE));
+
+        assert!(matches!(
+            app.take_external_action(),
+            Some(ExternalAction::OpenNativeTerminal { .. })
+        ));
+    }
+
+    #[test]
+    fn ctrl_g_closes_terminal_mode() {
+        let mut app = App::new();
+        app.view = View::Terminal;
+        app.terminal_return_view = View::Log;
+
+        app.handle_key(key(KeyCode::Char('g'), KeyModifiers::CONTROL));
+
+        assert_eq!(app.view, View::Log);
+    }
+
+    #[test]
+    fn ctrl_c_does_not_quit_when_terminal_mode_active() {
+        let mut app = App::new();
+        app.view = View::Terminal;
+
+        app.handle_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+
+        assert!(!app.should_quit);
     }
 }

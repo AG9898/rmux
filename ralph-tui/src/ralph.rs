@@ -667,6 +667,37 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
     })
 }
 
+pub fn open_tmux_split(cwd: &str) -> Result<bool> {
+    if std::env::var_os("TMUX").is_none() {
+        return Ok(false);
+    }
+    if find_in_path("tmux").is_none() {
+        return Ok(false);
+    }
+
+    let dir = if cwd.trim().is_empty() {
+        std::env::current_dir().unwrap_or_default()
+    } else {
+        PathBuf::from(cwd)
+    };
+    if !dir.exists() {
+        anyhow::bail!("working directory does not exist: {}", dir.display());
+    }
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
+    let status = Command::new("tmux")
+        .args(["split-window", "-h", "-c"])
+        .arg(&dir)
+        .arg(&shell)
+        .status()
+        .context("Failed to run tmux split-window")?;
+
+    if !status.success() {
+        anyhow::bail!("tmux split-window exited with status {}", status);
+    }
+    Ok(true)
+}
+
 pub fn ralph_bin_path() -> PathBuf {
     // 1. Explicit env var override
     if let Ok(p) = std::env::var("RALPH_BIN") {

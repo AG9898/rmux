@@ -1,10 +1,11 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap};
 
 use crate::app::{App, TextInput, View};
+use crate::theme::Theme;
 
 /// Render a TextInput as a Line with a visible block cursor
 fn render_input_line<'a>(input: &'a TextInput, focused: bool) -> Line<'a> {
@@ -25,7 +26,7 @@ fn render_input_line<'a>(input: &'a TextInput, focused: bool) -> Line<'a> {
         (text.to_string(), " ".to_string(), String::new())
     };
 
-    let cursor_style = Style::default().bg(Color::White).fg(Color::Black);
+    let cursor_style = Style::default().bg(Theme::FG_STRONG).fg(Theme::BG_BASE);
 
     Line::from(vec![
         Span::raw(format!(" {}", before)),
@@ -34,7 +35,42 @@ fn render_input_line<'a>(input: &'a TextInput, focused: bool) -> Line<'a> {
     ])
 }
 
+fn panel_block(title: &str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Theme::BORDER_DEFAULT))
+        .style(
+            Style::default()
+                .bg(Theme::BG_ELEVATED)
+                .fg(Theme::FG_PRIMARY),
+        )
+        .title(format!(" {} ", title))
+}
+
+fn focused_panel_block(title: &str) -> Block<'static> {
+    panel_block(title).border_style(Style::default().fg(Theme::BORDER_FOCUSED))
+}
+
+fn title_badge(label: &str) -> Span<'static> {
+    Span::styled(
+        format!(" {} ", label),
+        Style::default()
+            .fg(Theme::BG_BASE)
+            .bg(Theme::STATE_ACCENT)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+fn key_hint(label: &str) -> Span<'static> {
+    Span::styled(label.to_string(), Style::default().fg(Theme::STATE_INFO))
+}
+
 pub fn render(frame: &mut Frame, app: &mut App) {
+    frame.render_widget(
+        Block::default().style(Style::default().bg(Theme::BG_BASE).fg(Theme::FG_PRIMARY)),
+        frame.area(),
+    );
+
     match app.view {
         View::List => render_list(frame, app),
         View::Log => render_log(frame, app),
@@ -49,6 +85,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 _ => render_list(frame, app),
             }
             render_inject(frame, app);
+        }
+        View::Terminal => {
+            match app.terminal_return_view {
+                View::Log => render_log(frame, app),
+                _ => render_list(frame, app),
+            }
+            render_terminal_popup(frame, app);
         }
     }
     if app.show_presets {
@@ -69,13 +112,7 @@ fn render_list(frame: &mut Frame, app: &mut App) {
 
     // Title bar
     let title = Line::from(vec![
-        Span::styled(
-            " RALPH TUI ",
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
+        title_badge("RALPH TUI"),
         Span::raw(format!(
             "  {} instance{}",
             app.instances.len(),
@@ -95,7 +132,7 @@ fn render_list(frame: &mut Frame, app: &mut App) {
     ])
     .style(
         Style::default()
-            .fg(Color::Yellow)
+            .fg(Theme::FG_STRONG)
             .add_modifier(Modifier::BOLD),
     )
     .height(1);
@@ -105,9 +142,9 @@ fn render_list(frame: &mut Frame, app: &mut App) {
         .iter()
         .map(|inst| {
             let status = if inst.alive {
-                Cell::from(" alive").style(Style::default().fg(Color::Green))
+                Cell::from(" alive").style(Style::default().fg(Theme::STATE_OK))
             } else {
-                Cell::from(" dead").style(Style::default().fg(Color::Red))
+                Cell::from(" dead").style(Style::default().fg(Theme::STATE_ERROR))
             };
             let run = if inst.max_runs > 0 {
                 format!("{}/{}", inst.current_run, inst.max_runs)
@@ -148,10 +185,11 @@ fn render_list(frame: &mut Frame, app: &mut App) {
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(" Instances "))
+    .block(focused_panel_block("Instances"))
     .row_highlight_style(
         Style::default()
-            .bg(Color::DarkGray)
+            .bg(Theme::STATE_ACCENT)
+            .fg(Theme::BG_BASE)
             .add_modifier(Modifier::BOLD),
     )
     .highlight_symbol("▸ ");
@@ -168,7 +206,7 @@ fn render_list(frame: &mut Frame, app: &mut App) {
         .map(|i| i.prompt.clone())
         .unwrap_or_else(|| "(no instance selected)".to_string());
     let prompt = Paragraph::new(prompt_text)
-        .block(Block::default().borders(Borders::ALL).title(" Prompt "))
+        .block(panel_block("Prompt"))
         .wrap(Wrap { trim: true });
     frame.render_widget(prompt, chunks[2]);
 
@@ -176,31 +214,38 @@ fn render_list(frame: &mut Frame, app: &mut App) {
     let bar = if !app.status_msg.is_empty() {
         Line::from(vec![Span::styled(
             format!(" {} ", app.status_msg),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(Theme::STATE_WARN),
         )])
     } else {
         Line::from(vec![
-            Span::styled(" Enter", Style::default().fg(Color::Cyan)),
+            key_hint(" Enter"),
             Span::raw(" log  "),
-            Span::styled("K", Style::default().fg(Color::Cyan)),
+            key_hint("K"),
             Span::raw(" kill  "),
-            Span::styled("i", Style::default().fg(Color::Cyan)),
+            key_hint("i"),
             Span::raw(" inject  "),
-            Span::styled("p", Style::default().fg(Color::Cyan)),
+            key_hint("t"),
+            Span::raw(" split  "),
+            key_hint("T"),
+            Span::raw(" native  "),
+            key_hint("p"),
             Span::raw(" presets  "),
-            Span::styled("n", Style::default().fg(Color::Cyan)),
+            key_hint("n"),
             Span::raw(" new  "),
-            Span::styled("R", Style::default().fg(Color::Cyan)),
+            key_hint("R"),
             Span::raw(" restart  "),
-            Span::styled("c", Style::default().fg(Color::Cyan)),
+            key_hint("c"),
             Span::raw(" clean  "),
-            Span::styled("r", Style::default().fg(Color::Cyan)),
+            key_hint("r"),
             Span::raw(" refresh  "),
-            Span::styled("q", Style::default().fg(Color::Cyan)),
+            key_hint("q"),
             Span::raw(" quit"),
         ])
     };
-    frame.render_widget(Paragraph::new(bar), chunks[3]);
+    frame.render_widget(
+        Paragraph::new(bar).style(Style::default().fg(Theme::FG_MUTED)),
+        chunks[3],
+    );
 }
 
 fn render_log(frame: &mut Frame, app: &mut App) {
@@ -220,16 +265,13 @@ fn render_log(frame: &mut Frame, app: &mut App) {
         ""
     };
     let title = Line::from(vec![
-        Span::styled(
-            " LOG: ",
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
+        title_badge("LOG"),
         Span::styled(
             format!("{} ", app.log_instance_name),
-            Style::default().fg(Color::Black).bg(Color::Cyan),
+            Style::default()
+                .fg(Theme::BG_BASE)
+                .bg(Theme::STATE_ACCENT)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw(format!(
             " {}/{} lines{}",
@@ -251,46 +293,56 @@ fn render_log(frame: &mut Frame, app: &mut App) {
         .iter()
         .map(|s| {
             let style = if s.contains("--- RUN") && s.contains("COMPLETE") {
-                Style::default().fg(Color::Green)
+                Style::default().fg(Theme::STATE_OK)
             } else if s.contains("--- RUN") {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(Theme::STATE_INFO)
             } else if s.contains("Error") || s.contains("error") || s.contains("FAIL") {
-                Style::default().fg(Color::Red)
+                Style::default().fg(Theme::STATE_ERROR)
             } else if s.starts_with("[") && s.contains("]") {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(Theme::FG_MUTED)
             } else {
-                Style::default()
+                Style::default().fg(Theme::FG_PRIMARY)
             };
             Line::from(Span::styled(s.as_str(), style))
         })
         .collect();
 
-    let log_widget = Paragraph::new(lines).block(Block::default().borders(Borders::ALL));
+    let log_widget = Paragraph::new(lines).block(
+        focused_panel_block("Log")
+            .style(Style::default().bg(Theme::BG_SUBTLE).fg(Theme::FG_PRIMARY)),
+    );
     frame.render_widget(log_widget, chunks[1]);
 
     // Keybind bar
     let bar = if !app.status_msg.is_empty() {
         Line::from(Span::styled(
             format!(" {} ", app.status_msg),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(Theme::STATE_WARN),
         ))
     } else {
         Line::from(vec![
-            Span::styled(" Esc", Style::default().fg(Color::Cyan)),
+            key_hint(" Esc"),
             Span::raw(" back  "),
-            Span::styled("j/k", Style::default().fg(Color::Cyan)),
+            key_hint("j/k"),
             Span::raw(" scroll  "),
-            Span::styled("g/G", Style::default().fg(Color::Cyan)),
+            key_hint("g/G"),
             Span::raw(" top/bottom  "),
-            Span::styled("K", Style::default().fg(Color::Cyan)),
+            key_hint("K"),
             Span::raw(" kill  "),
-            Span::styled("i", Style::default().fg(Color::Cyan)),
+            key_hint("i"),
             Span::raw(" inject  "),
-            Span::styled("PgUp/PgDn", Style::default().fg(Color::Cyan)),
+            key_hint("t"),
+            Span::raw(" split  "),
+            key_hint("T"),
+            Span::raw(" native  "),
+            key_hint("PgUp/PgDn"),
             Span::raw(" page"),
         ])
     };
-    frame.render_widget(Paragraph::new(bar), chunks[2]);
+    frame.render_widget(
+        Paragraph::new(bar).style(Style::default().fg(Theme::FG_MUTED)),
+        chunks[2],
+    );
 }
 
 fn render_launch(frame: &mut Frame, app: &mut App) {
@@ -326,22 +378,16 @@ fn render_launch(frame: &mut Frame, app: &mut App) {
         .split(area);
 
     // Title
-    let title = Line::from(Span::styled(
-        " LAUNCH NEW RALPH ",
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    ));
+    let title = Line::from(title_badge("LAUNCH NEW RALPH"));
     frame.render_widget(Paragraph::new(title), chunks[0]);
 
     // Form fields — chunk indices: prompt=[1], cli_model=[2], hint=[3], dir=[4], name=[5], max_runs=[6], marathon=[7]
     for i in 0..6 {
         let is_focused = app.launch_form.focused == i;
         let border_style = if is_focused {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(Theme::BORDER_FOCUSED)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(Theme::BORDER_DEFAULT)
         };
 
         let label = app.launch_form.labels[i];
@@ -365,6 +411,11 @@ fn render_launch(frame: &mut Frame, app: &mut App) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(border_style)
+                .style(
+                    Style::default()
+                        .bg(Theme::BG_ELEVATED)
+                        .fg(Theme::FG_PRIMARY),
+                )
                 .title(format!(" {} ", label)),
         );
         frame.render_widget(widget, chunks[chunk_idx]);
@@ -374,7 +425,7 @@ fn render_launch(frame: &mut Frame, app: &mut App) {
             let hint = Paragraph::new(Line::from(Span::styled(
                 "  e.g. \"gemini flash\"",
                 Style::default()
-                    .fg(Color::DarkGray)
+                    .fg(Theme::FG_MUTED)
                     .add_modifier(Modifier::ITALIC),
             )));
             frame.render_widget(hint, chunks[3]);
@@ -383,14 +434,17 @@ fn render_launch(frame: &mut Frame, app: &mut App) {
 
     // Keybind bar
     let bar = Line::from(vec![
-        Span::styled(" Tab", Style::default().fg(Color::Cyan)),
+        key_hint(" Tab"),
         Span::raw(" next  "),
-        Span::styled("Enter", Style::default().fg(Color::Cyan)),
+        key_hint("Enter"),
         Span::raw(" launch  "),
-        Span::styled("Esc", Style::default().fg(Color::Cyan)),
+        key_hint("Esc"),
         Span::raw(" cancel"),
     ]);
-    frame.render_widget(Paragraph::new(bar), chunks[9]);
+    frame.render_widget(
+        Paragraph::new(bar).style(Style::default().fg(Theme::FG_MUTED)),
+        chunks[9],
+    );
 }
 
 fn render_restart(frame: &mut Frame, app: &mut App) {
@@ -409,18 +463,12 @@ fn render_restart(frame: &mut Frame, app: &mut App) {
         .split(area);
 
     // Title
-    let title = Line::from(Span::styled(
-        " RESTART RALPH ",
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    ));
+    let title = Line::from(title_badge("RESTART RALPH"));
     frame.render_widget(Paragraph::new(title), chunks[0]);
 
     // Instance info
     let info = Paragraph::new(format!(" Restarting: {}", app.restart_form.instance_name))
-        .block(Block::default().borders(Borders::ALL).title(" Instance "));
+        .block(panel_block("Instance"));
     frame.render_widget(info, chunks[1]);
 
     // Max runs input
@@ -428,19 +476,27 @@ fn render_restart(frame: &mut Frame, app: &mut App) {
     let input = Paragraph::new(content).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
+            .border_style(Style::default().fg(Theme::BORDER_FOCUSED))
+            .style(
+                Style::default()
+                    .bg(Theme::BG_ELEVATED)
+                    .fg(Theme::FG_PRIMARY),
+            )
             .title(" Max runs (0 = unlimited) "),
     );
     frame.render_widget(input, chunks[2]);
 
     // Keybind bar
     let bar = Line::from(vec![
-        Span::styled(" Enter", Style::default().fg(Color::Cyan)),
+        key_hint(" Enter"),
         Span::raw(" restart  "),
-        Span::styled("Esc", Style::default().fg(Color::Cyan)),
+        key_hint("Esc"),
         Span::raw(" cancel"),
     ]);
-    frame.render_widget(Paragraph::new(bar), chunks[4]);
+    frame.render_widget(
+        Paragraph::new(bar).style(Style::default().fg(Theme::FG_MUTED)),
+        chunks[4],
+    );
 }
 
 fn render_inject(frame: &mut Frame, app: &mut App) {
@@ -459,23 +515,22 @@ fn render_inject(frame: &mut Frame, app: &mut App) {
         ])
         .split(area);
 
-    let title = Line::from(Span::styled(
-        " PROMPT INJECTION ",
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    ));
+    let title = Line::from(title_badge("PROMPT INJECTION"));
     frame.render_widget(Paragraph::new(title), chunks[0]);
 
     let instance = Paragraph::new(format!(" {}", app.inject_form.instance_name))
-        .block(Block::default().borders(Borders::ALL).title(" Instance "));
+        .block(panel_block("Instance"));
     frame.render_widget(instance, chunks[1]);
 
     let prompt = Paragraph::new(render_input_line(&app.inject_form.prompt, true)).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
+            .border_style(Style::default().fg(Theme::BORDER_FOCUSED))
+            .style(
+                Style::default()
+                    .bg(Theme::BG_ELEVATED)
+                    .fg(Theme::FG_PRIMARY),
+            )
             .title(" Message "),
     );
     frame.render_widget(prompt, chunks[2]);
@@ -487,10 +542,10 @@ fn render_inject(frame: &mut Frame, app: &mut App) {
     };
     let hint_style = if app.status_msg.is_empty() {
         Style::default()
-            .fg(Color::DarkGray)
+            .fg(Theme::FG_MUTED)
             .add_modifier(Modifier::ITALIC)
     } else {
-        Style::default().fg(Color::Yellow)
+        Style::default().fg(Theme::STATE_WARN)
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(hint_text, hint_style))).wrap(Wrap { trim: true }),
@@ -498,12 +553,63 @@ fn render_inject(frame: &mut Frame, app: &mut App) {
     );
 
     let bar = Line::from(vec![
-        Span::styled(" Enter", Style::default().fg(Color::Cyan)),
+        key_hint(" Enter"),
         Span::raw(" send  "),
-        Span::styled("Esc", Style::default().fg(Color::Cyan)),
+        key_hint("Esc"),
         Span::raw(" cancel"),
     ]);
-    frame.render_widget(Paragraph::new(bar), chunks[5]);
+    frame.render_widget(
+        Paragraph::new(bar).style(Style::default().fg(Theme::FG_MUTED)),
+        chunks[5],
+    );
+}
+
+fn render_terminal_popup(frame: &mut Frame, app: &App) {
+    let area = centered_rect(85, 85, frame.area());
+    frame.render_widget(Clear, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // title
+            Constraint::Min(3),    // terminal
+            Constraint::Length(1), // keybinds
+        ])
+        .split(area);
+
+    let cwd = app
+        .native_terminal
+        .as_ref()
+        .map(|t| t.cwd().to_string())
+        .unwrap_or_else(|| "".to_string());
+    let title = Line::from(vec![
+        title_badge("TERMINAL"),
+        Span::raw(format!(" {}", cwd)),
+    ]);
+    frame.render_widget(Paragraph::new(title), chunks[0]);
+
+    let contents = app
+        .native_terminal
+        .as_ref()
+        .map(|t| t.screen_contents())
+        .unwrap_or_else(|| "terminal unavailable".to_string());
+
+    let term = Paragraph::new(contents).block(
+        focused_panel_block("Shell")
+            .style(Style::default().bg(Theme::BG_SUBTLE).fg(Theme::FG_PRIMARY)),
+    );
+    frame.render_widget(term, chunks[1]);
+
+    let bar = Line::from(vec![
+        key_hint(" Ctrl-G"),
+        Span::raw(" close  "),
+        key_hint("Ctrl-C"),
+        Span::raw(" interrupt shell"),
+    ]);
+    frame.render_widget(
+        Paragraph::new(bar).style(Style::default().fg(Theme::FG_MUTED)),
+        chunks[2],
+    );
 }
 
 fn render_presets_popup(frame: &mut Frame, app: &App) {
@@ -520,13 +626,7 @@ fn render_presets_popup(frame: &mut Frame, app: &App) {
         ])
         .split(area);
 
-    let title = Line::from(Span::styled(
-        " SKILL PRESETS ",
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    ));
+    let title = Line::from(title_badge("SKILL PRESETS"));
     frame.render_widget(Paragraph::new(title), chunks[0]);
 
     // Preset list
@@ -537,10 +637,11 @@ fn render_presets_popup(frame: &mut Frame, app: &App) {
         .map(|(i, p)| {
             let style = if i == app.preset_selected {
                 Style::default()
-                    .bg(Color::DarkGray)
+                    .bg(Theme::STATE_ACCENT)
+                    .fg(Theme::BG_BASE)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default()
+                Style::default().fg(Theme::FG_PRIMARY)
             };
             let prefix = if i == app.preset_selected {
                 "▸ "
@@ -551,8 +652,8 @@ fn render_presets_popup(frame: &mut Frame, app: &App) {
         })
         .collect();
 
-    let list = Table::new(rows, [Constraint::Percentage(100)])
-        .block(Block::default().borders(Borders::ALL).title(" Presets "));
+    let list =
+        Table::new(rows, [Constraint::Percentage(100)]).block(focused_panel_block("Presets"));
     frame.render_widget(list, chunks[1]);
 
     // Description of selected preset
@@ -562,24 +663,23 @@ fn render_presets_popup(frame: &mut Frame, app: &App) {
         .map(|p| p.description.as_str())
         .unwrap_or("");
     let description = Paragraph::new(desc)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Description "),
-        )
+        .block(panel_block("Description"))
         .wrap(Wrap { trim: true });
     frame.render_widget(description, chunks[2]);
 
     // Keybind bar
     let bar = Line::from(vec![
-        Span::styled(" j/k", Style::default().fg(Color::Cyan)),
+        key_hint(" j/k"),
         Span::raw(" select  "),
-        Span::styled("Enter", Style::default().fg(Color::Cyan)),
+        key_hint("Enter"),
         Span::raw(" load  "),
-        Span::styled("Esc", Style::default().fg(Color::Cyan)),
+        key_hint("Esc"),
         Span::raw(" cancel"),
     ]);
-    frame.render_widget(Paragraph::new(bar), chunks[3]);
+    frame.render_widget(
+        Paragraph::new(bar).style(Style::default().fg(Theme::FG_MUTED)),
+        chunks[3],
+    );
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {

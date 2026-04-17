@@ -76,7 +76,7 @@ The Rust TUI (`ralph-tui/`) is the primary UX surface for active development.
 - Live multi-instance status (alive/dead/rate-limited)
 - Per-instance detail + log tail
 - Spawn form and mid-run injection modal
-- Keyboard-first controls: `q`, `r`, `s`, `i`, `l`, `j/k`, `↑/↓`
+- Keyboard-first controls: `q`, `r`, `s`, `i`, `l`, `t` (tmux split), `T` (native terminal popup), `j/k`, `↑/↓`
 
 ## taskq Workflow
 

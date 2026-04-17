@@ -323,6 +323,81 @@
       ],
       "id": "TASK-002f",
       "description": "Show when a selected dashboard instance already has a queued .signal prompt so users know to wait for ralph to consume it before sending another injection."
+    },
+    {
+      "title": "Native PTY runtime for embedded TUI terminal",
+      "status": "done",
+      "priority": "medium",
+      "depends_on": [],
+      "id": "TASK-007a",
+      "description": "Add a focused PTY runtime for ralph-tui native terminal popup: spawn shell in selected cwd, non-blocking read/write, resize, and clean shutdown. Use portable-pty + vt100 with a small adapter API consumable by app/ui layers. Keep scope small for one agent (~70% context): <=3 files and <=250 net LOC.",
+      "type": "short-term"
+    },
+    {
+      "title": "App state and key routing for native terminal popup",
+      "status": "done",
+      "priority": "medium",
+      "depends_on": [
+        "TASK-007a"
+      ],
+      "id": "TASK-007b",
+      "description": "Integrate native terminal lifecycle into app state and event handling. Repurpose keybinding T to open native popup from list/log context, route input to terminal while active, and reserve Ctrl-G as escape back to prior view. Keep scope small for one agent (~70% context): <=3 files and <=250 net LOC.",
+      "type": "short-term"
+    },
+    {
+      "title": "Render native embedded terminal popup in ratatui",
+      "status": "done",
+      "priority": "medium",
+      "depends_on": [
+        "TASK-007b"
+      ],
+      "id": "TASK-007c",
+      "description": "Implement popup rendering for the native embedded terminal using terminal screen snapshot output, with compact status/hint line and dynamic size-to-PTY resize propagation. Preserve current left-right base view under overlay. Keep scope small for one agent (~70% context): <=3 files and <=250 net LOC.",
+      "type": "short-term"
+    },
+    {
+      "title": "Native terminal docs and regression coverage",
+      "status": "done",
+      "priority": "low",
+      "depends_on": [
+        "TASK-007c"
+      ],
+      "id": "TASK-007d",
+      "description": "Add targeted regression coverage for popup lifecycle/key routing (including Ctrl-G escape) and update user-facing keybinding docs so T is native popup and t remains tmux split. Keep scope small for one agent (~70% context): <=3 files and <=250 net LOC.",
+      "type": "short-term"
+    },
+    {
+      "title": "Profile native terminal input latency",
+      "status": "todo",
+      "priority": "medium",
+      "depends_on": [
+        "TASK-007c"
+      ],
+      "id": "TASK-007e",
+      "description": "Investigate typing latency in the native terminal popup (non-tmux path). Add lightweight timing instrumentation for key-to-render and PTY drain-to-render intervals, capture baseline numbers, and identify top hotspots. Keep scope small for one agent (~70% context): <=3 files and <=250 net LOC.",
+      "type": "short-term"
+    },
+    {
+      "title": "Optimize native terminal typing/render latency",
+      "status": "todo",
+      "priority": "medium",
+      "depends_on": [
+        "TASK-007e"
+      ],
+      "id": "TASK-007f",
+      "description": "Implement latency fixes for native terminal mode based on profiling: reduce per-frame allocation churn, make PTY output application incremental, and tune redraw/tick behavior for faster key echo while preserving CPU headroom. Keep scope small for one agent (~70% context): <=3 files and <=250 net LOC.",
+      "type": "short-term"
+    },
+    {
+      "title": "Dock native terminal on right side of TUI",
+      "status": "todo",
+      "priority": "medium",
+      "depends_on": [
+        "TASK-007f"
+      ],
+      "id": "TASK-007g",
+      "description": "Add a right-docked native terminal layout mode so the shell appears as a persistent pane on the right side of the TUI instead of popup-only. Include pane width policy and close/return key behavior consistent with current key model. Keep scope small for one agent (~70% context): <=3 files and <=250 net LOC.",
+      "type": "short-term"
     }
   ]
 }

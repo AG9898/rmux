@@ -23,7 +23,7 @@ Principles:
 │                              ├─ Log ───────────────────────────────────┤
 │                              │ [tail of ~/.ralph/logs/<name>.log]      │
 └──────────────────────────────┴─────────────────────────────────────────┘
- q quit  r restart  s spawn  i inject  l toggle-log  j/k navigate
+ q quit  r restart  s spawn  i inject  l toggle-log  t split-term  T native-term  j/k navigate
 ```
 
 - **Left pane**: scrollable instance list. Status icon (●=alive, ✗=dead, ⏸=rate-limited), name, run counter, estimated cost.
@@ -41,6 +41,8 @@ Established bindings — must not change:
 | `s` | Open spawn form |
 | `l` | Toggle log view |
 | `i` | Open prompt injection panel |
+| `t` | Open side-by-side tmux terminal split |
+| `T` | Open native embedded terminal popup |
 | `j` / `k` | Navigate instance list |
 | `↑` / `↓` | Navigate (alias) |
 
