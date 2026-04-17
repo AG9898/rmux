@@ -34,6 +34,7 @@ Options:
   -d, --dir <path>     Working directory (default: current dir)
   -m, --model <model>  Model to use (default: opus)
   -n, --name <name>    Name this ralph instance (default: auto-generated)
+  --cli <harness>       CLI harness: claude|codex|gemini|opencode (default: claude)
   --marathon            Enable rate-limit detection with 30min sleep
   --no-log              Disable log files (output to terminal only)
   -h, --help            Show this help
@@ -52,6 +53,7 @@ PROMPT=""
 MAX_RUNS=0
 WORK_DIR=""
 MODEL="opus"
+CLI_BIN="claude"
 RALPH_NAME=""
 MARATHON=false
 NO_LOG=false
@@ -61,6 +63,7 @@ while [[ $# -gt 0 ]]; do
     -h|--help) usage ;;
     -d|--dir) WORK_DIR="$2"; shift 2 ;;
     -m|--model) MODEL="$2"; shift 2 ;;
+    --cli) CLI_BIN="$2"; shift 2 ;;
     -n|--name) RALPH_NAME="$2"; shift 2 ;;
     --marathon) MARATHON=true; shift ;;
     --no-log) NO_LOG=true; shift ;;
@@ -117,6 +120,7 @@ prompt=$PROMPT
 max_runs=$MAX_RUNS
 current_run=0
 model=$MODEL
+cli=$CLI_BIN
 work_dir=${WORK_DIR:-$(pwd)}
 marathon=$MARATHON
 started=$(date -Iseconds)
@@ -149,7 +153,7 @@ if [ -n "$WORK_DIR" ]; then
   cd "$WORK_DIR" || { echo "Error: cannot cd to $WORK_DIR"; exit 1; }
 fi
 
-log "🚀 Ralph '$RALPH_NAME' started (model=$MODEL, max_runs=$MAX_RUNS, dir=$(pwd))"
+log "🚀 Ralph '$RALPH_NAME' started (cli=$CLI_BIN, model=$MODEL, max_runs=$MAX_RUNS, dir=$(pwd))"
 log "📝 Prompt: ${PROMPT:0:120}$([ ${#PROMPT} -gt 120 ] && echo '...')"
 [ "$NO_LOG" = false ] && log "📄 Log: $LOG_FILE"
 
@@ -170,10 +174,7 @@ while true; do
     || echo "current_run=$RUN_COUNT" >> "$META_FILE"
 
   OUTPUT_TMP=$(mktemp)
-  claude -p --model="$MODEL" --dangerously-skip-permissions \
-    "$PROMPT" \
-    --print --output-format=stream-json --verbose </dev/null 2>/dev/null \
-  | jq --unbuffered -r '
+  JQ_FILTER='
     if .type == "assistant" then
       .message.content[]? |
       if .type == "text" then
@@ -187,11 +188,36 @@ while true; do
         "📋 " + (.content | tostring | .[0:200])
       else empty end
     else empty end
-  ' | if [ "$NO_LOG" = false ]; then
-    tee -a "$LOG_FILE" "$OUTPUT_TMP"
-  else
-    tee "$OUTPUT_TMP"
-  fi
+  '
+  case "$CLI_BIN" in
+    claude)
+      claude -p --model="$MODEL" --dangerously-skip-permissions \
+        "$PROMPT" \
+        --print --output-format=stream-json --verbose </dev/null 2>/dev/null \
+      | jq --unbuffered -r "$JQ_FILTER" \
+      | if [ "$NO_LOG" = false ]; then tee -a "$LOG_FILE" "$OUTPUT_TMP"; else tee "$OUTPUT_TMP"; fi
+      ;;
+    codex)
+      codex --model "$MODEL" "$PROMPT" </dev/null 2>/dev/null \
+      | if [ "$NO_LOG" = false ]; then tee -a "$LOG_FILE" "$OUTPUT_TMP"; else tee "$OUTPUT_TMP"; fi
+      ;;
+    gemini)
+      gemini --model "$MODEL" "$PROMPT" </dev/null 2>/dev/null \
+      | if [ "$NO_LOG" = false ]; then tee -a "$LOG_FILE" "$OUTPUT_TMP"; else tee "$OUTPUT_TMP"; fi
+      ;;
+    opencode)
+      opencode run "$PROMPT" --model "$MODEL" </dev/null 2>/dev/null \
+      | if [ "$NO_LOG" = false ]; then tee -a "$LOG_FILE" "$OUTPUT_TMP"; else tee "$OUTPUT_TMP"; fi
+      ;;
+    *)
+      log "⚠️  Unknown harness '$CLI_BIN', falling back to claude"
+      claude -p --model="$MODEL" --dangerously-skip-permissions \
+        "$PROMPT" \
+        --print --output-format=stream-json --verbose </dev/null 2>/dev/null \
+      | jq --unbuffered -r "$JQ_FILTER" \
+      | if [ "$NO_LOG" = false ]; then tee -a "$LOG_FILE" "$OUTPUT_TMP"; else tee "$OUTPUT_TMP"; fi
+      ;;
+  esac
   OUTPUT=$(<"$OUTPUT_TMP")
   rm -f "$OUTPUT_TMP"
 

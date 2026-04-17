@@ -37,6 +37,8 @@ pub mod harness {
             cli: "codex",
             aliases: &["codex"],
             models: &[
+                ModelEntry { canonical: "gpt-5.3", aliases: &["5.3"] },
+                ModelEntry { canonical: "gpt-5.3-codex", aliases: &["5.3codex", "codex"] },
                 ModelEntry { canonical: "o4-mini", aliases: &["o4", "mini", "o4mini"] },
                 ModelEntry { canonical: "o3", aliases: &["o3"] },
                 ModelEntry { canonical: "gpt-4.1", aliases: &["gpt4", "gpt", "4.1"] },
