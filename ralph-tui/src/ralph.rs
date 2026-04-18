@@ -1,4 +1,6 @@
 use anyhow::{Context, Result};
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine;
 use serde_json;
 use std::collections::HashSet;
 use std::fs;
@@ -328,6 +330,55 @@ pub mod harness {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct JsonlSummary {
+    pub last_event: String,
+    pub current_run: u32,
+    pub last_duration_s: Option<u32>,
+    pub taskq_passed: Option<bool>,
+    pub rate_limited: bool,
+}
+
+pub fn read_jsonl_summary(path: &Path) -> JsonlSummary {
+    let content = fs::read_to_string(path).unwrap_or_default();
+    let mut s = JsonlSummary::default();
+    for line in content.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let event = v["event"].as_str().unwrap_or("").to_string();
+        match event.as_str() {
+            "run_start" => {
+                if let Some(run) = v["run"].as_u64() {
+                    s.current_run = run as u32;
+                }
+                s.rate_limited = false;
+                s.last_event = event;
+            }
+            "run_complete" => {
+                if let Some(run) = v["run"].as_u64() {
+                    s.current_run = run as u32;
+                }
+                s.last_duration_s = v["duration_s"].as_u64().map(|d| d as u32);
+                s.last_event = event;
+            }
+            "rate_limited" => {
+                s.rate_limited = true;
+                s.last_event = event;
+            }
+            "taskq_cycle_result" => {
+                s.taskq_passed = v["passed"].as_bool();
+                s.last_event = event;
+            }
+            _ if !event.is_empty() => {
+                s.last_event = event;
+            }
+            _ => {}
+        }
+    }
+    s
+}
+
 #[derive(Clone, Debug)]
 pub struct RalphInstance {
     pub name: String,
@@ -337,12 +388,20 @@ pub struct RalphInstance {
     pub model: String,
     pub cli: String,
     pub work_dir: String,
+    pub work_dir_abs: Option<String>,
+    pub taskq_file: Option<String>,
+    pub taskq_board_format: Option<String>,
+    pub preset_name: Option<String>,
     pub marathon: bool,
     pub started: String,
     pub current_run: u32,
     pub alive: bool,
     pub log_path: PathBuf,
     pub has_log: bool,
+    pub jsonl_path: PathBuf,
+    pub has_jsonl: bool,
+    pub jsonl_summary: Option<JsonlSummary>,
+    pub enforce_taskq_cycle: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -408,6 +467,7 @@ pub struct SpawnOpts {
     pub dir: String,
     pub name: String,
     pub marathon: bool,
+    pub enforce_taskq_cycle: Option<bool>,
 }
 
 fn ralph_dir() -> PathBuf {
@@ -438,9 +498,15 @@ fn parse_meta(path: &Path) -> Option<RalphInstance> {
     let mut model = String::from("opus");
     let mut cli = String::from("claude");
     let mut work_dir = String::new();
+    let mut work_dir_abs = None;
+    let mut taskq_file = None;
+    let mut taskq_board_format = None;
+    let mut preset_name = None;
     let mut marathon = false;
+    let mut enforce_taskq_cycle = None;
     let mut started = String::new();
     let mut current_run: u32 = 0;
+    let mut prompt_b64 = None;
 
     for line in content.lines() {
         if let Some((key, val)) = line.split_once('=') {
@@ -448,14 +514,36 @@ fn parse_meta(path: &Path) -> Option<RalphInstance> {
                 "name" => name = val.trim().to_string(),
                 "pid" => pid = val.trim().parse().unwrap_or(0),
                 "prompt" => prompt = val.trim().to_string(),
+                "prompt_b64" => prompt_b64 = Some(val.trim().to_string()),
                 "max_runs" => max_runs = val.trim().parse().unwrap_or(0),
                 "model" => model = val.trim().to_string(),
                 "cli" => cli = val.trim().to_string(),
                 "work_dir" => work_dir = val.trim().to_string(),
+                "work_dir_abs" => work_dir_abs = Some(val.trim().to_string()),
+                "taskq_file" => taskq_file = Some(val.trim().to_string()),
+                "taskq_board_format" => {
+                    taskq_board_format = Some(val.trim().to_string());
+                }
+                "preset_name" => preset_name = Some(val.trim().to_string()),
                 "marathon" => marathon = val.trim() == "true",
+                "enforce_taskq_cycle" => {
+                    enforce_taskq_cycle = match val.trim() {
+                        "true" => Some(true),
+                        "false" => Some(false),
+                        _ => None,
+                    };
+                }
                 "started" => started = val.trim().to_string(),
                 "current_run" => current_run = val.trim().parse().unwrap_or(0),
                 _ => {}
+            }
+        }
+    }
+
+    if let Some(encoded) = prompt_b64 {
+        if let Ok(decoded) = BASE64_STANDARD.decode(encoded) {
+            if let Ok(decoded_prompt) = String::from_utf8(decoded) {
+                prompt = decoded_prompt;
             }
         }
     }
@@ -470,6 +558,13 @@ fn parse_meta(path: &Path) -> Option<RalphInstance> {
 
     let log_path = log_dir().join(format!("{}.log", name));
     let has_log = log_path.exists();
+    let jsonl_path = log_dir().join(format!("{}.jsonl", name));
+    let has_jsonl = jsonl_path.exists();
+    let jsonl_summary = if has_jsonl {
+        Some(read_jsonl_summary(&jsonl_path))
+    } else {
+        None
+    };
     let alive = is_alive(pid);
 
     Some(RalphInstance {
@@ -480,12 +575,20 @@ fn parse_meta(path: &Path) -> Option<RalphInstance> {
         model,
         cli,
         work_dir,
+        work_dir_abs,
+        taskq_file,
+        taskq_board_format,
+        preset_name,
         marathon,
         started,
         current_run,
         alive,
         log_path,
         has_log,
+        jsonl_path,
+        has_jsonl,
+        jsonl_summary,
+        enforce_taskq_cycle,
     })
 }
 
@@ -535,6 +638,13 @@ pub fn list_instances() -> Vec<RalphInstance> {
                     })
                     .unwrap_or_default();
 
+                let jsonl_path = log_dir().join(format!("{}.jsonl", name));
+                let has_jsonl = jsonl_path.exists();
+                let jsonl_summary = if has_jsonl {
+                    Some(read_jsonl_summary(&jsonl_path))
+                } else {
+                    None
+                };
                 instances.push(RalphInstance {
                     name,
                     pid: 0,
@@ -543,12 +653,20 @@ pub fn list_instances() -> Vec<RalphInstance> {
                     model: "?".to_string(),
                     cli: "?".to_string(),
                     work_dir: String::new(),
+                    work_dir_abs: None,
+                    taskq_file: None,
+                    taskq_board_format: None,
+                    preset_name: None,
                     marathon: false,
                     started,
                     current_run: 0,
                     alive: false,
                     log_path: path,
                     has_log: true,
+                    jsonl_path,
+                    has_jsonl,
+                    jsonl_summary,
+                    enforce_taskq_cycle: None,
                 });
             }
         }
@@ -721,21 +839,7 @@ pub fn ralph_bin_path() -> PathBuf {
     PathBuf::from("ralph")
 }
 
-pub fn spawn_ralph(opts: &SpawnOpts) -> Result<String> {
-    let bin = ralph_bin_path();
-    if bin.is_absolute() && !bin.exists() {
-        anyhow::bail!(
-            "ralph binary not found at {}\nHint: set $RALPH_BIN or add ralph to your PATH",
-            bin.display()
-        );
-    }
-    if !opts.dir.is_empty() {
-        let dir_path = PathBuf::from(&opts.dir);
-        if !dir_path.exists() {
-            anyhow::bail!("working directory does not exist: {}", opts.dir);
-        }
-    }
-
+fn spawn_args(opts: &SpawnOpts) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
 
     if !opts.prompt.is_empty() {
@@ -763,6 +867,31 @@ pub fn spawn_ralph(opts: &SpawnOpts) -> Result<String> {
     if opts.marathon {
         args.push("--marathon".to_string());
     }
+    if let Some(enforce_taskq_cycle) = opts.enforce_taskq_cycle {
+        args.push(if enforce_taskq_cycle {
+            "--enforce-taskq-cycle".to_string()
+        } else {
+            "--no-enforce-taskq-cycle".to_string()
+        });
+    }
+
+    args
+}
+
+pub fn spawn_ralph(opts: &SpawnOpts) -> Result<String> {
+    let bin = ralph_bin_path();
+    if bin.is_absolute() && !bin.exists() {
+        anyhow::bail!(
+            "ralph binary not found at {}\nHint: set $RALPH_BIN or add ralph to your PATH",
+            bin.display()
+        );
+    }
+    if !opts.dir.is_empty() {
+        let dir_path = PathBuf::from(&opts.dir);
+        if !dir_path.exists() {
+            anyhow::bail!("working directory does not exist: {}", opts.dir);
+        }
+    }
 
     let cwd = if opts.dir.is_empty() {
         std::env::current_dir().unwrap_or_default()
@@ -771,7 +900,7 @@ pub fn spawn_ralph(opts: &SpawnOpts) -> Result<String> {
     };
 
     Command::new(&bin)
-        .args(&args)
+        .args(spawn_args(opts))
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -815,6 +944,7 @@ pub fn restart_instance(name: &str, new_max_runs: u32) -> Result<String> {
         dir: inst.work_dir,
         name: inst.name.clone(),
         marathon: inst.marathon,
+        enforce_taskq_cycle: inst.enforce_taskq_cycle,
     };
 
     spawn_ralph(&opts)?;
@@ -827,6 +957,35 @@ pub fn restart_instance(name: &str, new_max_runs: u32) -> Result<String> {
             new_max_runs.to_string()
         }
     ))
+}
+
+pub fn format_jsonl_line(line: &str) -> Option<String> {
+    let v = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    let event = v["event"].as_str()?;
+    let text = match event {
+        "run_start" => {
+            let run = v["run"].as_u64().unwrap_or(0);
+            format!("RUN {:>3}  start", run)
+        }
+        "run_complete" => {
+            let run = v["run"].as_u64().unwrap_or(0);
+            let dur = v["duration_s"]
+                .as_u64()
+                .map(|d| format!("  {}s", d))
+                .unwrap_or_default();
+            format!("RUN {:>3}  done{}", run, dur)
+        }
+        "rate_limited" => "WARN rate-limited".to_string(),
+        "taskq_cycle_result" => {
+            if v["passed"].as_bool().unwrap_or(false) {
+                "PASS cycle".to_string()
+            } else {
+                "FAIL cycle".to_string()
+            }
+        }
+        other => format!("     {}", other),
+    };
+    Some(text)
 }
 
 pub fn read_log_tail(path: &Path, max_lines: usize) -> Vec<String> {
@@ -858,6 +1017,8 @@ pub fn read_log_incremental(path: &Path, pos: u64) -> (Vec<String>, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+    use base64::Engine;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_signal_path(name: &str) -> PathBuf {
@@ -873,6 +1034,21 @@ mod tests {
                 nonce
             ))
             .join("instance.signal")
+    }
+
+    fn test_meta_path(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!(
+                "ralph-tui-meta-test-{}-{}-{}",
+                name,
+                std::process::id(),
+                nonce
+            ))
+            .join("instance.meta")
     }
 
     #[test]
@@ -909,5 +1085,83 @@ mod tests {
         assert!(err.to_string().contains("already queued"));
         assert_eq!(fs::read_to_string(&path).unwrap(), "pending");
         let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn parse_meta_prefers_prompt_b64_for_multiline_prompt() {
+        let path = test_meta_path("prompt-b64");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let encoded = BASE64_STANDARD.encode("line 1\nline 2");
+        fs::write(
+            &path,
+            format!(
+                "name=test\npid=0\nprompt=legacy\nprompt_b64={}\nmax_runs=1\nmodel=opus\ncli=claude\nwork_dir=/tmp\nwork_dir_abs=/tmp/abs\ntaskq_file=/tmp/taskq.md\ntaskq_board_format=markdown\npreset_name=fast\nmarathon=false\nenforce_taskq_cycle=true\nstarted=now\ncurrent_run=0\n",
+                encoded
+            ),
+        )
+        .unwrap();
+
+        let inst = parse_meta(&path).unwrap();
+
+        assert_eq!(inst.prompt, "line 1\nline 2");
+        assert_eq!(inst.work_dir_abs.as_deref(), Some("/tmp/abs"));
+        assert_eq!(inst.taskq_file.as_deref(), Some("/tmp/taskq.md"));
+        assert_eq!(inst.taskq_board_format.as_deref(), Some("markdown"));
+        assert_eq!(inst.preset_name.as_deref(), Some("fast"));
+        assert_eq!(inst.enforce_taskq_cycle, Some(true));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn parse_meta_falls_back_to_legacy_prompt_when_prompt_b64_is_invalid() {
+        let path = test_meta_path("prompt-b64-invalid");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "name=test\npid=0\nprompt=legacy\nprompt_b64=not-base64\nmax_runs=1\nmodel=opus\ncli=claude\nwork_dir=/tmp\nwork_dir_abs=/tmp/abs\nmarathon=false\nenforce_taskq_cycle=false\nstarted=now\ncurrent_run=0\n",
+        )
+        .unwrap();
+
+        let inst = parse_meta(&path).unwrap();
+
+        assert_eq!(inst.prompt, "legacy");
+        assert_eq!(inst.work_dir_abs.as_deref(), Some("/tmp/abs"));
+        assert_eq!(inst.enforce_taskq_cycle, Some(false));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn spawn_args_include_enforce_taskq_cycle_flags_when_explicit() {
+        let opts = SpawnOpts {
+            prompt: "hello".to_string(),
+            max_runs: 2,
+            model: "opus".to_string(),
+            cli: "claude".to_string(),
+            dir: "/tmp".to_string(),
+            name: "alpha".to_string(),
+            marathon: true,
+            enforce_taskq_cycle: Some(true),
+        };
+
+        assert_eq!(
+            spawn_args(&opts),
+            vec![
+                "hello".to_string(),
+                "2".to_string(),
+                "-n".to_string(),
+                "alpha".to_string(),
+                "-d".to_string(),
+                "/tmp".to_string(),
+                "-m".to_string(),
+                "opus".to_string(),
+                "--marathon".to_string(),
+                "--enforce-taskq-cycle".to_string(),
+            ]
+        );
+
+        let mut opts = opts;
+        opts.enforce_taskq_cycle = Some(false);
+        let args = spawn_args(&opts);
+        assert_eq!(args.last().map(String::as_str), Some("--no-enforce-taskq-cycle"));
     }
 }

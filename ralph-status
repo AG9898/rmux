@@ -7,6 +7,24 @@ RALPH_DIR="$HOME/.ralph"
 PID_DIR="$RALPH_DIR/pids"
 LOG_DIR="$RALPH_DIR/logs"
 
+meta_value() {
+  local key="$1"
+  local meta="$2"
+  grep "^${key}=" "$meta" | head -n1 | cut -d= -f2-
+}
+
+meta_prompt() {
+  local meta="$1"
+  local prompt_b64
+  prompt_b64="$(meta_value prompt_b64 "$meta")"
+  if [ -n "$prompt_b64" ]; then
+    printf '%s' "$prompt_b64" | base64 --decode 2>/dev/null || \
+      printf '%s' "$prompt_b64" | base64 -d 2>/dev/null
+  else
+    meta_value prompt "$meta"
+  fi
+}
+
 if [ ! -d "$PID_DIR" ]; then
   echo "No ralph instances have been started yet."
   exit 0
@@ -18,14 +36,14 @@ case "${1:-list}" in
     found=false
     for meta in "$PID_DIR"/*.meta; do
       [ -f "$meta" ] || continue
-      name=$(grep '^name=' "$meta" | cut -d= -f2-)
-      pid=$(grep '^pid=' "$meta" | cut -d= -f2-)
-      prompt=$(grep '^prompt=' "$meta" | cut -d= -f2-)
-      model=$(grep '^model=' "$meta" | cut -d= -f2-)
-      started=$(grep '^started=' "$meta" | cut -d= -f2-)
-      run=$(grep '^current_run=' "$meta" | cut -d= -f2-)
-      max=$(grep '^max_runs=' "$meta" | cut -d= -f2-)
-      work_dir=$(grep '^work_dir=' "$meta" | cut -d= -f2-)
+      name=$(meta_value name "$meta")
+      pid=$(meta_value pid "$meta")
+      prompt=$(meta_prompt "$meta")
+      model=$(meta_value model "$meta")
+      started=$(meta_value started "$meta")
+      run=$(meta_value current_run "$meta")
+      max=$(meta_value max_runs "$meta")
+      work_dir=$(meta_value work_dir "$meta")
 
       if kill -0 "$pid" 2>/dev/null; then
         status="🟢 running"
@@ -163,10 +181,11 @@ case "${1:-list}" in
     fi
 
     # Read settings from the dead ralph's metadata
-    prompt=$(grep '^prompt=' "$meta" | cut -d= -f2-)
-    model=$(grep '^model=' "$meta" | cut -d= -f2-)
-    work_dir=$(grep '^work_dir=' "$meta" | cut -d= -f2-)
-    marathon=$(grep '^marathon=' "$meta" | cut -d= -f2-)
+    prompt=$(meta_prompt "$meta")
+    model=$(meta_value model "$meta")
+    work_dir=$(meta_value work_dir "$meta")
+    marathon=$(meta_value marathon "$meta")
+    enforce_taskq_cycle=$(meta_value enforce_taskq_cycle "$meta")
 
     # Clean up old metadata
     rm -f "$meta" "$PID_DIR/${name}.pid"
@@ -178,6 +197,8 @@ case "${1:-list}" in
     [ "$new_runs" != "0" ] && ralph_cmd+=("$new_runs")
     ralph_cmd+=(-n "$name" -m "$model" -d "$work_dir")
     [ "$marathon" = "true" ] && ralph_cmd+=(--marathon)
+    [ "$enforce_taskq_cycle" = "true" ] && ralph_cmd+=(--enforce-taskq-cycle)
+    [ "$enforce_taskq_cycle" = "false" ] && ralph_cmd+=(--no-enforce-taskq-cycle)
 
     echo "Restarting $name..."
     echo "  Model:    $model"

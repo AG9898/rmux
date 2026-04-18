@@ -208,6 +208,8 @@ pub struct App {
     pub log_auto_follow: bool,
     pub log_file_pos: u64,
     pub log_instance_name: String,
+    pub log_show_jsonl: bool,
+    pub jsonl_file_pos: u64,
     pub launch_form: LaunchForm,
     pub restart_form: RestartForm,
     pub inject_form: InjectForm,
@@ -234,6 +236,8 @@ impl App {
             log_auto_follow: true,
             log_file_pos: 0,
             log_instance_name: String::new(),
+            log_show_jsonl: false,
+            jsonl_file_pos: 0,
             launch_form: LaunchForm::new(),
             restart_form: RestartForm {
                 instance_name: String::new(),
@@ -292,13 +296,33 @@ impl App {
     }
 
     fn refresh_log(&mut self) {
-        if let Some(inst) = self
+        let found = self
             .instances
             .iter()
             .find(|i| i.name == self.log_instance_name)
-        {
-            let path = inst.log_path.clone();
-            let (new_lines, new_pos) = ralph::read_log_incremental(&path, self.log_file_pos);
+            .map(|i| (i.log_path.clone(), i.jsonl_path.clone(), i.has_jsonl));
+        let Some((log_path, jsonl_path, has_jsonl)) = found else {
+            return;
+        };
+
+        if self.log_show_jsonl && has_jsonl {
+            let (new_lines, new_pos) =
+                ralph::read_log_incremental(&jsonl_path, self.jsonl_file_pos);
+            if new_pos > self.jsonl_file_pos {
+                let formatted: Vec<String> = new_lines
+                    .iter()
+                    .filter_map(|l| ralph::format_jsonl_line(l))
+                    .collect();
+                if !formatted.is_empty() {
+                    self.log_content.extend(formatted);
+                    if self.log_auto_follow {
+                        self.log_scroll = self.log_content.len().saturating_sub(1);
+                    }
+                }
+                self.jsonl_file_pos = new_pos;
+            }
+        } else {
+            let (new_lines, new_pos) = ralph::read_log_incremental(&log_path, self.log_file_pos);
             if !new_lines.is_empty() {
                 self.log_content.extend(new_lines);
                 self.log_file_pos = new_pos;
@@ -313,18 +337,73 @@ impl App {
         let Some(inst) = self.instances.get(self.selected) else {
             return;
         };
-        if !inst.has_log {
-            self.status_msg = format!("No log file for {}", inst.name);
+        let has_log = inst.has_log;
+        let has_jsonl = inst.has_jsonl;
+        let name = inst.name.clone();
+        let log_path = inst.log_path.clone();
+        let jsonl_path = inst.jsonl_path.clone();
+
+        if !has_log && !has_jsonl {
+            self.status_msg = format!("No log file for {}", name);
             return;
         }
-        let name = inst.name.clone();
-        let path = inst.log_path.clone();
+
         self.log_instance_name = name;
-        self.log_content = ralph::read_log_tail(&path, 500);
-        self.log_file_pos = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        self.log_show_jsonl = has_jsonl;
+
+        if has_jsonl {
+            self.log_content = ralph::read_log_tail(&jsonl_path, 500)
+                .into_iter()
+                .filter_map(|l| ralph::format_jsonl_line(&l))
+                .collect();
+            self.jsonl_file_pos = std::fs::metadata(&jsonl_path).map(|m| m.len()).unwrap_or(0);
+            self.log_file_pos = 0;
+        } else {
+            self.log_content = ralph::read_log_tail(&log_path, 500);
+            self.log_file_pos = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+            self.jsonl_file_pos = 0;
+        }
+
         self.log_auto_follow = true;
         self.log_scroll = self.log_content.len().saturating_sub(1);
         self.view = View::Log;
+        self.status_msg.clear();
+    }
+
+    fn toggle_log_mode(&mut self) {
+        let found = self
+            .instances
+            .iter()
+            .find(|i| i.name == self.log_instance_name)
+            .map(|i| (i.has_log, i.has_jsonl, i.log_path.clone(), i.jsonl_path.clone()));
+        let Some((has_log, has_jsonl, log_path, jsonl_path)) = found else {
+            return;
+        };
+
+        let requested_jsonl = !self.log_show_jsonl;
+        if requested_jsonl {
+            if !has_jsonl {
+                self.status_msg = "JSONL unavailable".to_string();
+                return;
+            }
+            self.log_show_jsonl = true;
+            self.log_content = ralph::read_log_tail(&jsonl_path, 500)
+                .into_iter()
+                .filter_map(|l| ralph::format_jsonl_line(&l))
+                .collect();
+            self.jsonl_file_pos = std::fs::metadata(&jsonl_path).map(|m| m.len()).unwrap_or(0);
+        } else {
+            if !has_log {
+                self.status_msg = "raw log unavailable".to_string();
+                return;
+            }
+            self.log_show_jsonl = false;
+            self.log_content = ralph::read_log_tail(&log_path, 500);
+            self.log_file_pos = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+        }
+
+        self.log_scroll = self.log_content.len().saturating_sub(1);
+        self.log_auto_follow = true;
         self.status_msg.clear();
     }
 
@@ -360,6 +439,7 @@ impl App {
             name: self.launch_form.fields[3].value().to_string(),
             max_runs: self.launch_form.fields[4].value().parse().unwrap_or(0),
             marathon: self.launch_form.fields[5].value() == "true",
+            enforce_taskq_cycle: None,
         };
         match ralph::spawn_ralph(&opts) {
             Ok(msg) => self.status_msg = msg,
@@ -679,6 +759,9 @@ impl App {
             }
             KeyCode::Char('T') => {
                 self.queue_native_terminal_action();
+            }
+            KeyCode::Char('J') => {
+                self.toggle_log_mode();
             }
             KeyCode::PageDown => {
                 self.log_scroll =

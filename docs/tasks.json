@@ -81,7 +81,7 @@
       "description": "Tee the claude --stream-json stdout into a structured .jsonl file alongside the existing human-readable .log file (e.g. ~/.ralph/logs/<name>.jsonl). The .log keeps existing format; .jsonl stores raw JSON events one-per-line. No visual output changes. Scope: ralph bash script and ralph-status for any status changes needed.",
       "type": "short-term",
       "priority": "medium",
-      "status": "todo",
+      "status": "done",
       "tags": [
         "feature",
         "observability",
@@ -99,7 +99,7 @@
       "description": "Update the Rust TUI to surface data parsed from the .jsonl file: show token count and estimated cost per run in the instance detail view. Reads from the .jsonl file path derived from the log path. Scope: ralph-tui/src/ralph.rs (parse jsonl for token/cost fields, expose on RalphInstance) and ralph-tui/src/ui.rs (render them). Depends on TASK-003a for the .jsonl files.",
       "type": "short-term",
       "priority": "medium",
-      "status": "todo",
+      "status": "done",
       "tags": [
         "feature",
         "observability"
@@ -257,7 +257,7 @@
       "description": "Add a server-side analytics function in dashboard/src/lib/server/ralph.ts that scans all .jsonl files, parses token usage and tool call events, aggregates per-run and cumulative stats (input/output tokens, cost by model pricing table, tool-call frequency, success/failure counts), and exposes them via a +page.server.ts load function for the /analytics route. Depends on TASK-003a for the .jsonl files.",
       "type": "long-term",
       "priority": "medium",
-      "status": "todo",
+      "status": "done",
       "tags": [
         "feature",
         "observability",
@@ -398,6 +398,43 @@
       "id": "TASK-007g",
       "description": "Add a right-docked native terminal layout mode so the shell appears as a persistent pane on the right side of the TUI instead of popup-only. Include pane width policy and close/return key behavior consistent with current key model. Keep scope small for one agent (~70% context): <=3 files and <=250 net LOC.",
       "type": "short-term"
+    },
+    {
+      "title": "ralph-status JSONL session listing",
+      "status": "todo",
+      "priority": "medium",
+      "depends_on": [
+        "TASK-003a"
+      ],
+      "description": "Extend ralph-status CLI to list sessions from JSONL files alongside the plain-text logs. Show per-session: name, model, run count, last event timestamp, and whether session is active (PID alive). Reads ~/.ralph/logs/*.jsonl, correlates with *.pid files."
+    },
+    {
+      "title": "TUI log view: render JSONL events as formatted lines",
+      "status": "done",
+      "priority": "medium",
+      "depends_on": [
+        "TASK-003b"
+      ],
+      "id": "TASK-003c",
+      "description": "When viewing logs in the TUI log view, detect if a .jsonl file exists alongside the .log and offer a toggle (e.g. 'J' key) to switch to a JSONL-formatted view. Each event renders as a colored, compact line (run_start, run_complete with duration, taskq_cycle_result pass/fail, rate_limited, output_line text). Uses read_jsonl_summary infrastructure added in TASK-003b."
+    },
+    {
+      "title": "TUI log view: unit tests for format_jsonl_line",
+      "status": "todo",
+      "priority": "medium",
+      "depends_on": [
+        "TASK-003c"
+      ]
+    },
+    {
+      "title": "Analytics API: add token/cost extraction from stream-json output",
+      "status": "todo",
+      "priority": "medium",
+      "depends_on": [
+        "TASK-006a"
+      ],
+      "id": "TASK-006c",
+      "description": "Parse claude stream-json for usage.input_tokens/output_tokens per run. Emit a run_tokens JSONL event in the ralph script. Extend getAnalytics() SessionSummary with inputTokens, outputTokens, estimatedCostUsd fields. Enables cost-visibility in the upcoming analytics frontend (TASK-006b)."
     }
   ]
 }

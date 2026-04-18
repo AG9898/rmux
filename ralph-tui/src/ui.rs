@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -142,7 +144,16 @@ fn render_list(frame: &mut Frame, app: &mut App) {
         .iter()
         .map(|inst| {
             let status = if inst.alive {
-                Cell::from(" alive").style(Style::default().fg(Theme::STATE_OK))
+                if inst
+                    .jsonl_summary
+                    .as_ref()
+                    .map(|s| s.rate_limited)
+                    .unwrap_or(false)
+                {
+                    Cell::from(" rate_lim").style(Style::default().fg(Theme::STATE_WARN))
+                } else {
+                    Cell::from(" alive").style(Style::default().fg(Theme::STATE_OK))
+                }
             } else {
                 Cell::from(" dead").style(Style::default().fg(Theme::STATE_ERROR))
             };
@@ -176,7 +187,7 @@ fn render_list(frame: &mut Frame, app: &mut App) {
     let table = Table::new(
         rows,
         [
-            Constraint::Length(8),
+            Constraint::Length(10),
             Constraint::Min(20),
             Constraint::Length(18),
             Constraint::Length(8),
@@ -200,12 +211,74 @@ fn render_list(frame: &mut Frame, app: &mut App) {
     }
     frame.render_stateful_widget(table, chunks[1], &mut state);
 
-    // Prompt preview
-    let prompt_text = app
-        .selected_instance()
-        .map(|i| i.prompt.clone())
-        .unwrap_or_else(|| "(no instance selected)".to_string());
-    let prompt = Paragraph::new(prompt_text)
+    // Prompt preview with optional JSONL summary line
+    let prompt_lines: Vec<Line> = {
+        let inst = app.selected_instance();
+        let prompt_text = inst
+            .map(|i| i.prompt.as_str())
+            .unwrap_or("(no instance selected)");
+        let mut lines: Vec<Line> = vec![Line::from(prompt_text.to_string())];
+        if let Some(summary) = inst.and_then(|i| i.jsonl_summary.as_ref()) {
+            let mut parts: Vec<Span> = vec![Span::styled(
+                " jsonl: ",
+                Style::default().fg(Theme::FG_MUTED),
+            )];
+            let run_str = format!("run {}", summary.current_run);
+            parts.push(Span::raw(run_str));
+            if let Some(dur) = summary.last_duration_s {
+                parts.push(Span::raw(format!("  dur {}s", dur)));
+            }
+            if let Some(passed) = summary.taskq_passed {
+                let (label, color) = if passed {
+                    ("  cycle:pass", Theme::STATE_OK)
+                } else {
+                    ("  cycle:fail", Theme::STATE_ERROR)
+                };
+                parts.push(Span::styled(label, Style::default().fg(color)));
+            }
+            if summary.rate_limited {
+                parts.push(Span::styled(
+                    "  rate-limited",
+                    Style::default().fg(Theme::STATE_WARN),
+                ));
+            }
+            lines.push(Line::from(parts));
+        }
+        if let Some(inst) = inst {
+            let mut parts: Vec<Span> = vec![Span::styled(
+                " taskq: ",
+                Style::default().fg(Theme::FG_MUTED),
+            )];
+            let mut added = false;
+            if let Some(taskq_file) = inst.taskq_file.as_deref() {
+                let file = Path::new(taskq_file)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(taskq_file);
+                parts.push(Span::raw(format!("board {}", file)));
+                added = true;
+            }
+            if let Some(board_format) = inst.taskq_board_format.as_deref() {
+                if added {
+                    parts.push(Span::raw(" "));
+                }
+                parts.push(Span::raw(format!("format {}", board_format)));
+                added = true;
+            }
+            if let Some(preset_name) = inst.preset_name.as_deref() {
+                if added {
+                    parts.push(Span::raw(" "));
+                }
+                parts.push(Span::raw(format!("preset {}", preset_name)));
+                added = true;
+            }
+            if added {
+                lines.push(Line::from(parts));
+            }
+        }
+        lines
+    };
+    let prompt = Paragraph::new(prompt_lines)
         .block(panel_block("Prompt"))
         .wrap(Wrap { trim: true });
     frame.render_widget(prompt, chunks[2]);
@@ -259,11 +332,8 @@ fn render_log(frame: &mut Frame, app: &mut App) {
         .split(frame.area());
 
     // Title
-    let follow_indicator = if app.log_auto_follow {
-        " [auto-follow]"
-    } else {
-        ""
-    };
+    let follow_indicator = if app.log_auto_follow { " [follow]" } else { "" };
+    let mode_label = if app.log_show_jsonl { " [jsonl]" } else { " [log]" };
     let title = Line::from(vec![
         title_badge("LOG"),
         Span::styled(
@@ -274,9 +344,10 @@ fn render_log(frame: &mut Frame, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(format!(
-            " {}/{} lines{}",
+            " {}/{} lines{}{}",
             app.log_scroll + 1,
             app.log_content.len(),
+            mode_label,
             follow_indicator,
         )),
     ]);
@@ -292,13 +363,27 @@ fn render_log(frame: &mut Frame, app: &mut App) {
     let lines: Vec<Line> = app.log_content[start..end]
         .iter()
         .map(|s| {
-            let style = if s.contains("--- RUN") && s.contains("COMPLETE") {
+            let style = if app.log_show_jsonl {
+                if s.starts_with("FAIL") {
+                    Style::default().fg(Theme::STATE_ERROR)
+                } else if s.starts_with("PASS") {
+                    Style::default().fg(Theme::STATE_OK)
+                } else if s.starts_with("WARN") {
+                    Style::default().fg(Theme::STATE_WARN)
+                } else if s.starts_with("RUN") && s.contains("done") {
+                    Style::default().fg(Theme::STATE_OK)
+                } else if s.starts_with("RUN") {
+                    Style::default().fg(Theme::STATE_INFO)
+                } else {
+                    Style::default().fg(Theme::FG_MUTED)
+                }
+            } else if s.contains("--- RUN") && s.contains("COMPLETE") {
                 Style::default().fg(Theme::STATE_OK)
             } else if s.contains("--- RUN") {
                 Style::default().fg(Theme::STATE_INFO)
             } else if s.contains("Error") || s.contains("error") || s.contains("FAIL") {
                 Style::default().fg(Theme::STATE_ERROR)
-            } else if s.starts_with("[") && s.contains("]") {
+            } else if s.starts_with('[') && s.contains(']') {
                 Style::default().fg(Theme::FG_MUTED)
             } else {
                 Style::default().fg(Theme::FG_PRIMARY)
@@ -327,6 +412,8 @@ fn render_log(frame: &mut Frame, app: &mut App) {
             Span::raw(" scroll  "),
             key_hint("g/G"),
             Span::raw(" top/bottom  "),
+            key_hint("J"),
+            Span::raw(" jsonl/log  "),
             key_hint("K"),
             Span::raw(" kill  "),
             key_hint("i"),

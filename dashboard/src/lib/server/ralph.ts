@@ -1,8 +1,10 @@
+import { createReadStream } from 'node:fs';
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { exec, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createInterface } from 'node:readline';
 
 const execAsync = promisify(exec);
 
@@ -26,6 +28,10 @@ export interface RalphInstance {
 	maxRuns: number;
 	model: string;
 	workDir: string;
+	workDirAbs: string;
+	taskqFile: string;
+	taskqBoardFormat: string;
+	presetName: string;
 	marathon: boolean;
 	started: string;
 	currentRun: number;
@@ -74,6 +80,24 @@ function parseMeta(content: string): Record<string, string> {
 	return meta;
 }
 
+function decodePromptB64(value: string): string | null {
+	const compact = value.replace(/\s+/g, '');
+	if (!compact || compact.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(compact)) {
+		return null;
+	}
+
+	try {
+		const decoded = Buffer.from(compact, 'base64').toString('utf-8');
+		const normalized = Buffer.from(decoded, 'utf-8').toString('base64').replace(/=+$/u, '');
+		if (normalized !== compact.replace(/=+$/u, '')) {
+			return null;
+		}
+		return decoded;
+	} catch {
+		return null;
+	}
+}
+
 export async function listInstances(): Promise<RalphInstance[]> {
 	const instances: RalphInstance[] = [];
 	const knownNames = new Set<string>();
@@ -100,10 +124,14 @@ export async function listInstances(): Promise<RalphInstance[]> {
 				instances.push({
 					name,
 					pid,
-					prompt: meta.prompt || '',
+					prompt: decodePromptB64(meta.prompt_b64) || meta.prompt || '',
 					maxRuns: parseInt(meta.max_runs || '0'),
 					model: meta.model || 'opus',
 					workDir: meta.work_dir || '',
+					workDirAbs: meta.work_dir_abs || '',
+					taskqFile: meta.taskq_file || '',
+					taskqBoardFormat: meta.taskq_board_format || '',
+					presetName: meta.preset_name || '',
 					marathon: meta.marathon === 'true',
 					started: meta.started || '',
 					currentRun: parseInt(meta.current_run || '0'),
@@ -132,6 +160,10 @@ export async function listInstances(): Promise<RalphInstance[]> {
 					maxRuns: 0,
 					model: '?',
 					workDir: '',
+					workDirAbs: '',
+					taskqFile: '',
+					taskqBoardFormat: '',
+					presetName: '',
 					marathon: false,
 					started: s.mtime.toISOString(),
 					currentRun: 0,
@@ -297,6 +329,193 @@ export interface SpawnOptions {
 	dir?: string;
 	model?: string;
 	marathon?: boolean;
+}
+
+export interface SessionSummary {
+	name: string;
+	model: string;
+	cli: string;
+	dir: string;
+	taskqFile: string;
+	taskqBoardFormat: string;
+	presetName: string;
+	started: string;
+	ended: string | null;
+	maxRuns: number;
+	totalRuns: number;
+	totalDurationS: number;
+	rateLimitedCount: number;
+	toolCallCount: number;
+	taskqCyclesPassed: number;
+	taskqCyclesFailed: number;
+}
+
+export interface AnalyticsResult {
+	sessions: SessionSummary[];
+	totals: {
+		sessions: number;
+		runs: number;
+		durationS: number;
+		rateLimited: number;
+		toolCalls: number;
+		taskqCyclesPassed: number;
+		taskqCyclesFailed: number;
+	};
+	byModel: Record<string, { sessions: number; runs: number; durationS: number }>;
+	toolCallFrequency: Record<string, number>;
+}
+
+const TOOL_LINE_RE = /^🔧\s+([^:]+):/u;
+const EMPTY_ANALYTICS_TOTALS: AnalyticsResult['totals'] = {
+	sessions: 0,
+	runs: 0,
+	durationS: 0,
+	rateLimited: 0,
+	toolCalls: 0,
+	taskqCyclesPassed: 0,
+	taskqCyclesFailed: 0
+};
+
+async function summarizeAnalyticsFile(
+	filePath: string,
+	fallbackName: string,
+	toolCallFrequency: Record<string, number>
+): Promise<SessionSummary | null> {
+	const summary: SessionSummary = {
+		name: fallbackName,
+		model: '?',
+		cli: 'claude',
+		dir: '',
+		taskqFile: '',
+		taskqBoardFormat: '',
+		presetName: '',
+		started: '',
+		ended: null,
+		maxRuns: 0,
+		totalRuns: 0,
+		totalDurationS: 0,
+		rateLimitedCount: 0,
+		toolCallCount: 0,
+		taskqCyclesPassed: 0,
+		taskqCyclesFailed: 0
+	};
+	let hasMeaningfulData = false;
+
+	const input = createReadStream(filePath, { encoding: 'utf8' });
+	const lines = createInterface({ input, crlfDelay: Infinity });
+
+	try {
+		for await (const line of lines) {
+			const trimmed = line.trim();
+			if (!trimmed) continue;
+
+			let ev: Record<string, unknown>;
+			try {
+				ev = JSON.parse(trimmed);
+			} catch {
+				continue;
+			}
+
+			switch (ev.event) {
+				case 'session_start':
+					hasMeaningfulData = true;
+					summary.name = (ev.name as string) || summary.name;
+					summary.model = (ev.model as string) || '?';
+					summary.cli = (ev.cli as string) || 'claude';
+					summary.dir = (ev.dir as string) || '';
+					summary.taskqFile = (ev.taskq_file as string) || '';
+					summary.taskqBoardFormat = (ev.taskq_board_format as string) || '';
+					summary.presetName = (ev.preset_name as string) || '';
+					summary.started = (ev.ts as string) || '';
+					summary.maxRuns = (ev.max_runs as number) || 0;
+					break;
+				case 'session_stop':
+					hasMeaningfulData = true;
+					summary.ended = (ev.ts as string) || null;
+					summary.totalRuns = (ev.run_count as number) || summary.totalRuns;
+					break;
+				case 'run_complete':
+					hasMeaningfulData = true;
+					summary.totalRuns = Math.max(summary.totalRuns, (ev.run as number) || 0);
+					summary.totalDurationS += (ev.duration_s as number) || 0;
+					break;
+				case 'rate_limited':
+					hasMeaningfulData = true;
+					summary.rateLimitedCount += 1;
+					break;
+				case 'output_line': {
+					const text = (ev.text as string) || '';
+					const m = TOOL_LINE_RE.exec(text);
+					if (m) {
+						hasMeaningfulData = true;
+						const toolName = m[1].trim();
+						summary.toolCallCount += 1;
+						toolCallFrequency[toolName] = (toolCallFrequency[toolName] || 0) + 1;
+					}
+					break;
+				}
+				case 'taskq_cycle_result':
+					hasMeaningfulData = true;
+					if (ev.passed) summary.taskqCyclesPassed += 1;
+					else summary.taskqCyclesFailed += 1;
+					break;
+			}
+		}
+	} finally {
+		lines.close();
+		input.destroy();
+	}
+
+	return hasMeaningfulData ? summary : null;
+}
+
+export async function getAnalytics(): Promise<AnalyticsResult> {
+	const sessions: SessionSummary[] = [];
+	const byModel: AnalyticsResult['byModel'] = {};
+	const toolCallFrequency: Record<string, number> = {};
+
+	if (!(await fileExists(LOG_DIR))) {
+		return { sessions, totals: EMPTY_ANALYTICS_TOTALS, byModel, toolCallFrequency };
+	}
+
+	const files = await readdir(LOG_DIR);
+	const jsonlFiles = files.filter((f) => f.endsWith('.jsonl'));
+
+	for (const file of jsonlFiles) {
+		const filePath = join(LOG_DIR, file);
+		let summary: SessionSummary | null = null;
+		try {
+			summary = await summarizeAnalyticsFile(filePath, file.replace('.jsonl', ''), toolCallFrequency);
+		} catch {
+			continue;
+		}
+		if (summary) sessions.push(summary);
+
+		if (!summary) continue;
+
+		const m = summary.model;
+		if (!byModel[m]) byModel[m] = { sessions: 0, runs: 0, durationS: 0 };
+		byModel[m].sessions += 1;
+		byModel[m].runs += summary.totalRuns;
+		byModel[m].durationS += summary.totalDurationS;
+	}
+
+	sessions.sort((a, b) => b.started.localeCompare(a.started));
+
+	const totals = sessions.reduce(
+		(acc, s) => ({
+			sessions: acc.sessions + 1,
+			runs: acc.runs + s.totalRuns,
+			durationS: acc.durationS + s.totalDurationS,
+			rateLimited: acc.rateLimited + s.rateLimitedCount,
+			toolCalls: acc.toolCalls + s.toolCallCount,
+			taskqCyclesPassed: acc.taskqCyclesPassed + s.taskqCyclesPassed,
+			taskqCyclesFailed: acc.taskqCyclesFailed + s.taskqCyclesFailed
+		}),
+		EMPTY_ANALYTICS_TOTALS
+	);
+
+	return { sessions, totals, byModel, toolCallFrequency };
 }
 
 export async function spawnRalph(opts: SpawnOptions): Promise<{ name: string; pid: number }> {

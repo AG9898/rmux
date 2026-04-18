@@ -7,6 +7,133 @@ if [[ -x "$SELF_RALPH" ]]; then
   export RALPH_BIN="${RALPH_BIN:-$SELF_RALPH}"
 fi
 
+RALPH_DIR="$HOME/.ralph"
+LOG_DIR="$RALPH_DIR/logs"
+PID_DIR="$RALPH_DIR/pids"
+PRESET_DIR="$RALPH_DIR/presets"
+
+init_runtime() {
+  if ! mkdir -p "$LOG_DIR" "$PID_DIR" "$PRESET_DIR"; then
+    echo "Failed to create Ralph runtime directories under $RALPH_DIR"
+    return 1
+  fi
+
+  local copied=0
+  local skipped=0
+  local preset
+  local name
+  for preset in "$SCRIPT_DIR"/presets/*.json; do
+    [ -f "$preset" ] || continue
+    name="$(basename "$preset")"
+    if [ -e "$PRESET_DIR/$name" ]; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+    if ! cp "$preset" "$PRESET_DIR/$name"; then
+      echo "Failed to copy preset: $preset"
+      return 1
+    fi
+    copied=$((copied + 1))
+  done
+
+  echo "Initialized Ralph runtime:"
+  echo "  $RALPH_DIR"
+  echo "  $LOG_DIR"
+  echo "  $PID_DIR"
+  echo "  $PRESET_DIR"
+  echo "Preset sync: copied $copied, kept $skipped existing"
+}
+
+doctor_status=0
+
+doctor_ok() {
+  echo "ok   $1"
+}
+
+doctor_warn() {
+  echo "warn $1"
+}
+
+doctor_fail() {
+  echo "fail $1"
+  doctor_status=1
+}
+
+check_command() {
+  local cmd="$1"
+  local required="${2:-required}"
+  if command -v "$cmd" &>/dev/null; then
+    doctor_ok "$cmd: $(command -v "$cmd")"
+  elif [ "$required" = required ]; then
+    doctor_fail "$cmd is missing"
+  else
+    doctor_warn "$cmd is missing"
+  fi
+}
+
+doctor_runtime() {
+  doctor_status=0
+
+  echo "Ralph doctor"
+  echo "Repo:    $SCRIPT_DIR"
+  echo "Runtime: $RALPH_DIR"
+  echo ""
+
+  check_command bash required
+  check_command python3 required
+  check_command jq required
+  check_command claude optional
+  check_command codex optional
+  check_command cargo optional
+  echo ""
+
+  for dir in "$RALPH_DIR" "$LOG_DIR" "$PID_DIR" "$PRESET_DIR"; do
+    if [ -d "$dir" ]; then
+      doctor_ok "$dir exists"
+    else
+      doctor_fail "$dir is missing; run ./ralph init"
+    fi
+  done
+  echo ""
+
+  if [ -d "$SCRIPT_DIR/presets" ]; then
+    doctor_ok "bundled presets directory exists"
+  else
+    doctor_warn "bundled presets directory is missing"
+  fi
+
+  if command -v python3 &>/dev/null; then
+    if (cd "$SCRIPT_DIR" && python3 "$SCRIPT_DIR/scripts/ralph_taskq.py" stats >/dev/null 2>&1); then
+      doctor_ok "taskq board discovered"
+    else
+      doctor_warn "taskq board was not discovered from this repo"
+    fi
+  fi
+
+  return "$doctor_status"
+}
+
+case "${1:-}" in
+  init)
+    shift
+    if [ "$#" -gt 0 ]; then
+      echo "Unexpected argument for init: $1"
+      exit 1
+    fi
+    init_runtime
+    exit 0
+    ;;
+  doctor)
+    shift
+    if [ "$#" -gt 0 ]; then
+      echo "Unexpected argument for doctor: $1"
+      exit 1
+    fi
+    doctor_runtime
+    exit "$?"
+    ;;
+esac
+
 if [[ "${1:-}" == "taskq" ]]; then
   shift
   if ! command -v python3 &>/dev/null; then
@@ -14,11 +141,6 @@ if [[ "${1:-}" == "taskq" ]]; then
     exit 1
   fi
   exec python3 "$SCRIPT_DIR/scripts/ralph_taskq.py" "$@"
-fi
-
-if ! command -v jq &>/dev/null; then
-  echo "Error: jq is not installed. Install it with: sudo apt install jq"
-  exit 1
 fi
 
 DEFAULT_PROMPT='/tackle choose a todo. If you come across tasks that go out of scope of the todo, make new kanban todos.
@@ -40,6 +162,8 @@ When you are done, ensure you have added at least one (1) new todo to the kanban
 usage() {
   cat <<'USAGE'
 Usage: ralph [prompt] [max_runs] [options]
+       ralph init
+       ralph doctor
        ralph taskq <subcommand> [args]
 
 Arguments:
@@ -50,7 +174,7 @@ Options:
   -d, --dir <path>     Working directory (default: current dir)
   -m, --model <model>  Model to use (default: opus)
   -n, --name <name>    Name this ralph instance (default: auto-generated)
-  --cli <harness>       CLI harness: claude|codex|gemini|opencode (default: claude)
+  --cli <harness>       CLI harness: claude|codex|gemini|opencode|fake (default: claude)
   --enforce-taskq-cycle Require each run to produce taskq progress: >=1 done + >=1 added
   --no-enforce-taskq-cycle Disable taskq cycle guard even when auto-detected
   --marathon            Enable rate-limit detection with 30min sleep
@@ -60,12 +184,19 @@ Options:
 Task board:
   taskq                 Cross-repo task board query/update utility
 
+Setup:
+  init                  Create ~/.ralph runtime directories and install bundled presets
+  doctor                Check runtime directories and required local commands
+
 Examples:
+  ralph init                                         # Prepare ~/.ralph after cloning
+  ralph doctor                                       # Verify runtime/dependencies
   ralph 10                                          # 10 runs with default prompt
   ralph "See AGENT_PROMPT.md" 10                    # Custom prompt, 10 runs
   ralph "Fix all lint errors" -d ~/my-project -n lint-fixer
   ralph --marathon                                  # Infinite with rate-limit recovery
   ralph --enforce-taskq-cycle                       # Fail run if no done+add-task progress
+  ralph --cli fake 1                                # Smoke-test runner events without an AI CLI
   ralph taskq next                                  # Pick next actionable task
   ralph taskq task TASK-004a                        # Show task details
   ralph taskq set-status TASK-004a in_progress      # Update task status
@@ -117,6 +248,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if ! command -v jq &>/dev/null; then
+  echo "Error: jq is not installed. Install it with: sudo apt install jq"
+  exit 1
+fi
+if ! command -v base64 &>/dev/null; then
+  echo "Error: base64 is required for restart-safe metadata"
+  exit 1
+fi
+
 # Normalize common Codex model aliases to canonical names.
 if [[ "$CLI_BIN" == "codex" ]]; then
   MODEL_LOWER="$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]')"
@@ -165,16 +305,14 @@ case "$ENFORCE_TASKQ_CYCLE" in
 esac
 
 # --- Setup ---
-RALPH_DIR="$HOME/.ralph"
-LOG_DIR="$RALPH_DIR/logs"
-PID_DIR="$RALPH_DIR/pids"
-mkdir -p "$LOG_DIR" "$PID_DIR"
+mkdir -p "$LOG_DIR" "$PID_DIR" "$PRESET_DIR"
 
 if [ -z "$RALPH_NAME" ]; then
   RALPH_NAME="ralph-$(date +%Y%m%d-%H%M%S)-$$"
 fi
 
 LOG_FILE="$LOG_DIR/${RALPH_NAME}.log"
+JSONL_FILE="$LOG_DIR/${RALPH_NAME}.jsonl"
 PID_FILE="$PID_DIR/${RALPH_NAME}.pid"
 META_FILE="$PID_DIR/${RALPH_NAME}.meta"
 SIGNAL_FILE="$PID_DIR/${RALPH_NAME}.signal"
@@ -183,20 +321,8 @@ RATE_LIMIT_SLEEP=1800
 # Write PID file
 echo $$ > "$PID_FILE"
 
-# Write metadata
-cat > "$META_FILE" <<EOF
-name=$RALPH_NAME
-pid=$$
-prompt=$PROMPT
-max_runs=$MAX_RUNS
-current_run=0
-model=$MODEL
-cli=$CLI_BIN
-work_dir=${WORK_DIR:-$(pwd)}
-marathon=$MARATHON
-enforce_taskq_cycle=$ENFORCE_TASKQ_CYCLE
-started=$(date -Iseconds)
-EOF
+# Store prompts in metadata as a single line so restarts can recover them safely.
+PROMPT_B64="$(printf '%s' "$PROMPT" | base64 | tr -d '\n')"
 
 log() {
   local msg="[$(date '+%H:%M:%S')] $1"
@@ -207,8 +333,93 @@ log() {
   fi
 }
 
+_emit() {
+  [ "$NO_LOG" = false ] || return 0
+  local ts
+  ts="$(date -Iseconds)"
+  jq -cn --arg ts "$ts" "$@" >> "$JSONL_FILE"
+}
+
 taskq_stats() {
   python3 "$SCRIPT_DIR/scripts/ralph_taskq.py" stats
+}
+
+resolve_taskq_binding() {
+  TASKQ_FILE_RESOLVED=""
+  TASKQ_BOARD_FORMAT=""
+  [ -n "${TASKQ_FILE:-}" ] && export TASKQ_FILE
+  command -v python3 &>/dev/null || return 0
+
+  local stats
+  if ! stats="$(python3 "$SCRIPT_DIR/scripts/ralph_taskq.py" stats 2>/dev/null)"; then
+    return 0
+  fi
+
+  TASKQ_FILE_RESOLVED="$(printf '%s' "$stats" | jq -r '.board.path // ""')"
+  TASKQ_BOARD_FORMAT="$(printf '%s' "$stats" | jq -r '.board.format // ""')"
+  if [ -n "$TASKQ_FILE_RESOLVED" ]; then
+    export TASKQ_FILE="$TASKQ_FILE_RESOLVED"
+  fi
+}
+
+preflight_check() {
+  local cmd="$1"
+  local required="$2"
+  local ok=false
+  local path=""
+  if path="$(command -v "$cmd" 2>/dev/null)"; then
+    ok=true
+  fi
+  _emit --arg event "preflight_check" \
+    --arg command "$cmd" \
+    --arg required "$required" \
+    --argjson ok "$([ "$ok" = true ] && echo true || echo false)" \
+    --arg path "$path" \
+    '{event:$event,ts:$ts,command:$command,required:($required == "true"),ok:$ok,path:$path}'
+  if [ "$ok" = true ]; then
+    log "✅ preflight: $cmd ($path)"
+  elif [ "$required" = true ]; then
+    log "❌ preflight: required command missing: $cmd"
+  else
+    log "⚠️  preflight: optional command missing: $cmd"
+  fi
+}
+
+run_preflight() {
+  preflight_check python3 true
+  preflight_check jq true
+  preflight_check base64 true
+  case "$CLI_BIN" in
+    fake) ;;
+    claude|codex|gemini|opencode) preflight_check "$CLI_BIN" false ;;
+  esac
+  if [ -f Cargo.toml ] || [ -f ralph-tui/Cargo.toml ]; then
+    preflight_check cargo false
+  fi
+  if [ -f package.json ] || [ -f dashboard/package.json ]; then
+    preflight_check npm false
+  fi
+}
+
+write_meta() {
+  cat > "$META_FILE" <<EOF
+name=$RALPH_NAME
+pid=$$
+prompt_b64=$PROMPT_B64
+max_runs=$MAX_RUNS
+current_run=$RUN_COUNT
+model=$MODEL
+cli=$CLI_BIN
+work_dir=$WORK_DIR_ABS
+work_dir_abs=$WORK_DIR_ABS
+marathon=$MARATHON
+enforce_taskq_cycle=$ENFORCE_TASKQ_CYCLE
+started=$STARTED_AT
+jsonl_file=$JSONL_FILE
+taskq_file=$TASKQ_FILE_RESOLVED
+taskq_board_format=$TASKQ_BOARD_FORMAT
+preset_name=${RALPH_PRESET_NAME:-}
+EOF
 }
 
 read_signal_prompt() {
@@ -232,6 +443,10 @@ read_signal_prompt() {
     log "  $line"
   done <<< "$injected_prompt"
 
+  _emit --arg event "signal_injected" --argjson run "$RUN_COUNT" \
+    --arg preview "${injected_prompt:0:100}" \
+    '{event:$event,ts:$ts,run:$run,preview:$preview}'
+
   PROMPT="${PROMPT}
 
 --- Mid-run prompt injection ($(date -Iseconds)) ---
@@ -242,6 +457,8 @@ ${injected_prompt}
 cleanup() {
   # Prevent re-entry from repeated Ctrl-C
   trap - INT TERM
+  _emit --arg event "session_stop" --argjson run_count "$RUN_COUNT" \
+    '{event:$event,ts:$ts,run_count:$run_count}'
   log "🛑 Ralph '$RALPH_NAME' stopped after $RUN_COUNT runs."
   rm -f "$PID_FILE"
   # Kill child processes only (not ourselves)
@@ -256,28 +473,55 @@ trap cleanup INT TERM
 if [ -n "$WORK_DIR" ]; then
   cd "$WORK_DIR" || { echo "Error: cannot cd to $WORK_DIR"; exit 1; }
 fi
+WORK_DIR_ABS="$(pwd -P)"
+STARTED_AT="$(date -Iseconds)"
+RUN_COUNT=0
+resolve_taskq_binding
+write_meta
 
 if [ "$ENFORCE_TASKQ_CYCLE" = true ] && ! command -v python3 &>/dev/null; then
   log "❌ Taskq cycle guard requires python3 for 'ralph taskq stats'."
   exit 1
 fi
+if [ "$ENFORCE_TASKQ_CYCLE" = true ] && [ -z "$TASKQ_FILE_RESOLVED" ]; then
+  log "❌ Taskq cycle guard requires a discoverable task board."
+  exit 1
+fi
 
-log "🚀 Ralph '$RALPH_NAME' started (cli=$CLI_BIN, model=$MODEL, max_runs=$MAX_RUNS, dir=$(pwd), taskq_guard=$ENFORCE_TASKQ_CYCLE)"
+log "🚀 Ralph '$RALPH_NAME' started (cli=$CLI_BIN, model=$MODEL, max_runs=$MAX_RUNS, dir=$WORK_DIR_ABS, taskq_guard=$ENFORCE_TASKQ_CYCLE)"
 log "📝 Prompt: ${PROMPT:0:120}$([ ${#PROMPT} -gt 120 ] && echo '...')"
 [ "$NO_LOG" = false ] && log "📄 Log: $LOG_FILE"
+[ -n "$TASKQ_FILE_RESOLVED" ] && log "📋 Task board: $TASKQ_FILE_RESOLVED"
 
-RUN_COUNT=0
+_emit --arg event "session_start" \
+  --arg name "$RALPH_NAME" \
+  --arg model "$MODEL" \
+  --arg cli "$CLI_BIN" \
+  --arg dir "$WORK_DIR_ABS" \
+  --arg work_dir_abs "$WORK_DIR_ABS" \
+  --arg taskq_file "$TASKQ_FILE_RESOLVED" \
+  --arg taskq_board_format "$TASKQ_BOARD_FORMAT" \
+  --arg preset_name "${RALPH_PRESET_NAME:-}" \
+  --argjson max_runs "$MAX_RUNS" \
+  --argjson marathon "$([ "$MARATHON" = true ] && echo true || echo false)" \
+  --argjson enforce_taskq_cycle "$([ "$ENFORCE_TASKQ_CYCLE" = true ] && echo true || echo false)" \
+  --arg prompt_preview "${PROMPT:0:120}" \
+  '{event:$event,ts:$ts,name:$name,model:$model,cli:$cli,dir:$dir,work_dir_abs:$work_dir_abs,taskq_file:$taskq_file,taskq_board_format:$taskq_board_format,preset_name:$preset_name,max_runs:$max_runs,marathon:$marathon,enforce_taskq_cycle:$enforce_taskq_cycle,prompt_preview:$prompt_preview}'
+run_preflight
 
 while true; do
-  RUN_COUNT=$((RUN_COUNT + 1))
-
-  if [ "$MAX_RUNS" -gt 0 ] && [ "$RUN_COUNT" -gt "$MAX_RUNS" ]; then
+  if [ "$MAX_RUNS" -gt 0 ] && [ "$RUN_COUNT" -ge "$MAX_RUNS" ]; then
     log "✅ Reached max runs ($MAX_RUNS). Stopping."
     break
   fi
 
+  RUN_COUNT=$((RUN_COUNT + 1))
+
   read_signal_prompt
 
+  _emit --arg event "run_start" --argjson run "$RUN_COUNT" \
+    '{event:$event,ts:$ts,run:$run}'
+  RUN_START_SECS=$SECONDS
   log "--- RUN $RUN_COUNT$([ "$MAX_RUNS" -gt 0 ] && echo "/$MAX_RUNS") ---"
 
   BEFORE_DONE=0
@@ -359,6 +603,13 @@ while true; do
       opencode run "$PROMPT" --model "$MODEL" </dev/null 2>/dev/null \
       | if [ "$NO_LOG" = false ]; then tee -a "$LOG_FILE" "$OUTPUT_TMP"; else tee "$OUTPUT_TMP"; fi
       ;;
+    fake)
+      {
+        echo "💬 fake harness received prompt (${#PROMPT} chars)"
+        echo "🔧 FakeTool: {\"ok\":true}"
+        echo "📋 fake harness complete"
+      } | if [ "$NO_LOG" = false ]; then tee -a "$LOG_FILE" "$OUTPUT_TMP"; else tee "$OUTPUT_TMP"; fi
+      ;;
     *)
       log "⚠️  Unknown harness '$CLI_BIN', falling back to claude"
       claude -p --model="$MODEL" --dangerously-skip-permissions \
@@ -371,12 +622,23 @@ while true; do
   OUTPUT=$(<"$OUTPUT_TMP")
   rm -f "$OUTPUT_TMP"
 
+  while IFS= read -r _line; do
+    [ -n "$_line" ] || continue
+    _emit --arg event "output_line" --argjson run "$RUN_COUNT" --arg text "$_line" \
+      '{event:$event,ts:$ts,run:$run,text:$text}'
+  done <<< "$OUTPUT"
+  _emit --arg event "run_complete" --argjson run "$RUN_COUNT" \
+    --argjson duration_s "$((SECONDS - RUN_START_SECS))" \
+    '{event:$event,ts:$ts,run:$run,duration_s:$duration_s}'
+
   log "--- RUN $RUN_COUNT COMPLETE ---"
 
   # Check for errors
   RATE_LIMITED=false
   if echo "$OUTPUT" | grep -q "You've hit your limit"; then
     RATE_LIMITED=true
+    _emit --arg event "rate_limited" --argjson run "$RUN_COUNT" \
+      '{event:$event,ts:$ts,run:$run}'
     if [ "$MARATHON" = true ]; then
       log "⏳ Rate limited. Sleeping 30 minutes..."
       sleep "$RATE_LIMIT_SLEEP" &
@@ -410,6 +672,10 @@ while true; do
 
     DONE_DELTA=$((AFTER_DONE - BEFORE_DONE))
     TOTAL_DELTA=$((AFTER_TOTAL - BEFORE_TOTAL))
+    _emit --arg event "taskq_cycle_result" --argjson run "$RUN_COUNT" \
+      --argjson passed "$([ "$DONE_DELTA" -ge 1 ] && [ "$TOTAL_DELTA" -ge 1 ] && echo true || echo false)" \
+      --argjson done_delta "$DONE_DELTA" --argjson total_delta "$TOTAL_DELTA" \
+      '{event:$event,ts:$ts,run:$run,passed:$passed,done_delta:$done_delta,total_delta:$total_delta}'
     if [ "$DONE_DELTA" -lt 1 ] || [ "$TOTAL_DELTA" -lt 1 ]; then
       log "❌ Taskq cycle guard failed: expected >=1 task moved to done and >=1 new task added."
       log "   observed: done_delta=$DONE_DELTA total_delta=$TOTAL_DELTA"

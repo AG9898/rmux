@@ -33,7 +33,29 @@ Inspired by the [Ralph Wiggum technique](https://ghuntley.com/ralph/) from Geoff
 - `python3` (required for `ralph taskq`)
 - `cargo` (only for `ralph-tui`)
 
-### 2) Run a loop
+### 2) Initialize Runtime State
+
+Run this once after cloning the repo:
+
+```bash
+git clone <repo-url> ~/projects/rmux
+cd ~/projects/rmux
+./ralph init
+./ralph doctor
+```
+
+`./ralph init` creates the global runtime directory at `~/.ralph/`:
+
+```text
+~/.ralph/
+  logs/
+  pids/
+  presets/
+```
+
+It also copies bundled presets from `./presets/` into `~/.ralph/presets/` without overwriting existing user presets.
+
+### 3) Run a loop
 
 ```bash
 # from repo root
@@ -43,7 +65,7 @@ Inspired by the [Ralph Wiggum technique](https://ghuntley.com/ralph/) from Geoff
 nohup ./ralph "See AGENT_PROMPT.md" 10 -d ~/cwl-api -n kanban-worker > /dev/null 2>&1 &
 ```
 
-### 3) Monitor and intervene
+### 4) Monitor and intervene
 
 ```bash
 ./ralph-status list
@@ -52,7 +74,7 @@ nohup ./ralph "See AGENT_PROMPT.md" 10 -d ~/cwl-api -n kanban-worker > /dev/null
 ./ralph-status kill kanban-worker
 ```
 
-### 4) Launch the TUI
+### 5) Launch the TUI
 
 ```bash
 cargo run --manifest-path ralph-tui/Cargo.toml
@@ -62,6 +84,8 @@ cargo run --manifest-path ralph-tui/Cargo.toml
 
 | Command | What it does |
 |---|---|
+| `./ralph init` | Create `~/.ralph/{logs,pids,presets}` and copy bundled presets without overwriting user copies |
+| `./ralph doctor` | Check runtime directories, required tools, optional agent CLIs, and taskq board discovery |
 | `./ralph [prompt] [max_runs] [options]` | Main loop runner with PID tracking, logs, and optional rate-limit recovery |
 | `./ralph --marathon` | Infinite looping with rate-limit sleep/retry behavior |
 | `./ralph --enforce-taskq-cycle` | Fails run when no task-board progress occurs (`>=1 done` and `>=1 added`) |
@@ -101,6 +125,7 @@ The Rust TUI (`ralph-tui/`) is the primary UX surface for active development.
 ~/.ralph/
   logs/     # timestamped logs + structured JSONL
   pids/     # PID files + JSON metadata + signal files
+  presets/  # user-global launch presets
 ```
 
 Interfaces:

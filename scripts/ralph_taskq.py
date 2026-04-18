@@ -994,17 +994,41 @@ def parse_list_arg(value: str | None) -> list[str]:
     return split_depends(value)
 
 
+def task_ids_in_use(tasks: list[Task]) -> set[str]:
+    return {task.id for task in tasks if task.id}
+
+
+def infer_next_chain_task_id(task_id: str | None, used_ids: set[str]) -> str | None:
+    if not task_id:
+        return None
+    m = re.match(r"^([A-Za-z0-9_.-]*-\d+)([a-z])$", task_id)
+    if not m:
+        return None
+    next_suffix = chr(ord(m.group(2)) + 1)
+    if next_suffix > "z":
+        return None
+    candidate = f"{m.group(1)}{next_suffix}"
+    if candidate in used_ids:
+        return None
+    return candidate
+
+
 def command_add_task(args: argparse.Namespace) -> dict[str, Any]:
     board_path = discover_board(Path.cwd(), args.board)
     board = load_board(board_path)
 
+    after_task = resolve_task(board, args.after) if args.after else None
     task_id = args.id.strip() if args.id else None
+    if not task_id and after_task is not None:
+        task_id = infer_next_chain_task_id(after_task.id, task_ids_in_use(board.tasks))
     title = args.title.strip()
     if not title:
         fail("title is required")
     status = normalize_status(args.status, default="todo")
     priority = normalize_priority(args.priority, default="medium")
     depends_on = parse_list_arg(args.depends_on)
+    if not depends_on and after_task is not None:
+        depends_on = [after_task.id or after_task.ref]
 
     task_obj: dict[str, Any] = {
         "title": title,
@@ -1085,6 +1109,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_add.add_argument("--status", default="todo", help="Task status (default: todo)")
     p_add.add_argument("--priority", default="medium", help="Task priority (default: medium)")
     p_add.add_argument("--depends-on", help="Comma/space-separated dependency IDs")
+    p_add.add_argument("--after", help="Link and optionally chain after another task ref")
     p_add.add_argument("--description", help="Optional description")
     p_add.add_argument("--type", help="Optional type")
     p_add.add_argument("--board", help="Explicit board file path")
